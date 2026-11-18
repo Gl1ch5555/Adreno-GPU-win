@@ -63,7 +63,7 @@ fi
 step "dx11um_virtio.dll (D3D10/D3D11 DXVK)"
 D11=$SRC/virtio-d3d11
 ddk_headers "$D11/include/winddk" >/dev/null
-LTO=-flto; [ "$ARCH" = x86 ] && LTO=
+LTO=-flto; [ "$ARCH" != arm64 ] && LTO=
 make -C "$D11" -j"$JOBS" PREFIX=$PREFIX BUILD_DIR=build-$TAG LTO=$LTO
 cp "$D11/build-$TAG/dist/dx11um_virtio.dll" "$OUT/"
 endstep
