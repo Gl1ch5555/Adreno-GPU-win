@@ -5,8 +5,8 @@ Windows only. Runs elevated (PyInstaller --uac-admin). No third-party deps.
 import json, os, subprocess, sys, threading, time, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-APP_VERSION = "1.12"
-REPO = "Gl1ch5/Adreno-GPU-win"
+APP_VERSION = "1.13"
+REPO = "Gl1ch5555/Adreno-GPU-win"
 TASK = "DroidVM GPU logs"
 TOOL_DIR = r"C:\ProgramData\DroidVM-GPU"
 LOG_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "DroidVM-GPU-Logs")
