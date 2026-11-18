@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [arm64]
+        arch: [arm64, arm64ec, x86]
     steps:
       - uses: actions/checkout@v4
 
@@ -35,7 +35,7 @@ jobs:
       - name: Host packages
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q ninja-build cmake glslang-tools flex bison clang libclang-dev unzip python3-pip
+          sudo apt-get install -y -q ninja-build cmake glslang-tools flex bison clang libclang-dev python3-clang unzip python3-pip
           pip3 install --break-system-packages -q 'meson>=1.6' mako pyyaml packaging
           mkdir -p "$HOME/bin" && ln -sf "$(command -v clang)" "$HOME/bin/clang-cl"
           echo "$HOME/bin" >> "$GITHUB_PATH"
@@ -111,9 +111,56 @@ jobs:
             src/REVISIONS.md
           if-no-files-found: error
 
+  build-arm64x:
+    name: build arm64x forwarders
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions
+        run: cat versions.env | grep -v '^#' >> "$GITHUB_ENV"
+
+      - name: Restore llvm-mingw
+        uses: actions/cache@v4
+        with:
+          path: ~/llvm-mingw
+          key: tc-${{ env.LLVM_MINGW }}-${{ env.NUGET_VER }}
+
+      - name: llvm-mingw
+        run: |
+          if [ ! -x ~/llvm-mingw/bin/clang ]; then
+            curl -sSLf --retry 5 -o lm.tar.xz \
+              "https://github.com/mstorsjo/llvm-mingw/releases/download/$LLVM_MINGW/llvm-mingw-$LLVM_MINGW-ucrt-ubuntu-22.04-x86_64.tar.xz"
+            mkdir -p ~/llvm-mingw && tar xf lm.tar.xz -C ~/llvm-mingw --strip-components=1 && rm lm.tar.xz
+          fi
+          echo "$HOME/llvm-mingw/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-arm64*
+          path: bin
+
+      - name: Generate ARM64X pure forwarder DLLs
+        run: |
+          mkdir -p work out/arm64x
+          cp bin/bin-arm64/out/arm64/*.dll work/
+          cp bin/bin-arm64ec/out/arm64ec/*.dll work/
+          scripts/build-arm64x-forwarders.sh work "$HOME/llvm-mingw"
+          for stem in dx11um_virtio dx12um_virtio vulkan_freedreno droidvm_opengl droidvm_vulkan; do
+            mv "work/${stem}.dll" out/arm64x/
+          done
+          ls -la out/arm64x
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-arm64x
+          path: out/arm64x/*.dll
+          if-no-files-found: error
+
   package-windows:
     name: sign + installer
-    needs: build-linux
+    needs: [build-linux, build-arm64x]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4

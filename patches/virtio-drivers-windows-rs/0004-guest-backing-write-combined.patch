@@ -1,0 +1,124 @@
+diff --git a/gpu-wddm/src/guest_backing.rs b/gpu-wddm/src/guest_backing.rs
+index 32c2a29..4b12d63 100644
+--- a/gpu-wddm/src/guest_backing.rs
++++ b/gpu-wddm/src/guest_backing.rs
+@@ -1,7 +1,7 @@
+ //! Windows-owned contiguous backing for guest-allocated DRM BOs.
+ //! The current pseudo-unprotected VM shares ordinary guest RAM with the host.
+ //! Keep pages and the MDL alive until RESOURCE_UNREF and allocation teardown.
+-use core::ptr::{NonNull, null_mut};
++use core::ptr::NonNull;
+ use spin::mutex::SpinMutex;
+ use winresult::STATUS;
+ use crate::NtStatus;
+@@ -15,8 +15,6 @@ use virtio_drivers::device::gpu::commands::MemEntry;
+ mod layout;
+ 
+ static ALLOC_OK: AtomicU32 = AtomicU32::new(0);
+-static CONTIG_FAIL: AtomicU32 = AtomicU32::new(0);
+-static MDL_FAIL: AtomicU32 = AtomicU32::new(0);
+ static FREED: AtomicU32 = AtomicU32::new(0);
+ static RETAINED_MAPPED: AtomicU32 = AtomicU32::new(0);
+ static CHUNK_OK: AtomicU32 = AtomicU32::new(0);
+@@ -118,41 +116,12 @@ impl GuestBacking {
+         if size == 0 || size > u32::MAX as u64 {
+             return Err(NtStatus(STATUS::INVALID_PARAMETER));
+         }
+-        // Large BOs only require contiguous 64 KiB DMA segments, not one
+-        // contiguous range for the entire allocation. Avoid the expensive
+-        // whole-range search/reclaim on fragmented guest RAM. The chunked
+-        // path also supplies the MDL used for CPU mappings and teardown.
+-        if size >= 2 * 1024 * 1024 {
+-            return Self::new_chunked(size);
+-        }
+-        let Some(raw) = NonNull::new(unsafe {
+-            MmAllocateContiguousMemory((size + ALIGN) as _,
+-                LARGE_INTEGER { QuadPart: 0xFFFFFFFFFF }) as *mut u8
+-        }) else {
+-            bringup::count("GuestBackingContigFailCount", &CONTIG_FAIL);
+-            record_alloc_failure(1, size);
+-            return Self::new_chunked(size);
+-        };
+-        let physical = mm_get_physical_address(raw.as_ptr() as _);
+-        let offset = ((ALIGN - (physical & (ALIGN - 1))) & (ALIGN - 1)) as usize;
+-        let ptr = unsafe { raw.as_ptr().add(offset) };
+-        unsafe { core::ptr::write_bytes(ptr, 0, size as usize); }
+-        let mdl = unsafe { IoAllocateMdl(ptr as _, size as u32, 0, 0, null_mut()) };
+-        if mdl.is_null() {
+-            unsafe { MmFreeContiguousMemory(raw.as_ptr() as _); }
+-            bringup::count("GuestBackingMdlFailCount", &MDL_FAIL);
+-            record_alloc_failure(2, size);
+-            return Err(NtStatus(STATUS::NO_MEMORY));
+-        }
+-        unsafe { MmBuildMdlForNonPagedPool(mdl); }
+-        let mut backing = Self { allocation: Some(raw), physical: physical + offset as u64,
+-            size: size as u32, mdl: ManuallyDrop::new(MdlOwned(mdl)),
+-            entries: Vec::new(), mapping: SpinMutex::new(None),
+-            kernel_va: NonNull::new(ptr), kernel_map: SpinMutex::new(None) };
+-        backing.entries.try_reserve_exact(1)?;
+-        backing.entries.push(MemEntry { addr: backing.physical, length: backing.size, _padding: 0 });
+-        backing.record_success();
+-        Ok(backing)
++        // Allocate all guest DRM BOs via MmAllocatePagesForMdlEx with
++        // MmWriteCombined (Normal Non-Cacheable on ARM64) so there is no
++        // MmCached kernel pool alias and CPU writes reach DRAM without sitting
++        // dirty in Oryon L1/L2 caches on GPUs/VMs without IO-coherency (e.g.
++        // Adreno 829 on Snapdragon 8 Gen 5 under Gunyah).
++        Self::new_chunked(size)
+     }
+ 
+     fn new_chunked(size: u64) -> Result<Self, NtStatus> {
+@@ -168,13 +137,13 @@ impl GuestBacking {
+         let mut mdl = unsafe { MmAllocatePagesForMdlEx(
+             LARGE_INTEGER { QuadPart: 0 }, LARGE_INTEGER { QuadPart: 0xFFFFFFFFFF },
+             LARGE_INTEGER { QuadPart: CHUNK as i64 }, size as _,
+-            MEMORY_CACHING_TYPE::MmCached, FLAGS | MM_ALLOCATE_NO_WAIT,
++            MEMORY_CACHING_TYPE::MmWriteCombined, FLAGS | MM_ALLOCATE_NO_WAIT,
+         ) };
+         if mdl.is_null() && unsafe { KeGetCurrentIrql() } as u32 <= PASSIVE_LEVEL {
+             mdl = unsafe { MmAllocatePagesForMdlEx(
+                 LARGE_INTEGER { QuadPart: 0 }, LARGE_INTEGER { QuadPart: 0xFFFFFFFFFF },
+                 LARGE_INTEGER { QuadPart: CHUNK as i64 }, size as _,
+-                MEMORY_CACHING_TYPE::MmCached, FLAGS,
++                MEMORY_CACHING_TYPE::MmWriteCombined, FLAGS,
+             ) };
+         }
+         if mdl.is_null() {
+@@ -198,6 +167,12 @@ impl GuestBacking {
+         }
+         for chunk in pages.chunks_exact(CHUNK / PAGE_SIZE as usize) {
+             let addr = chunk[0] * PAGE_SIZE as u64;
++            if let Some(last) = backing.entries.last_mut() {
++                if last.addr + last.length as u64 == addr {
++                    last.length += CHUNK as u32;
++                    continue;
++                }
++            }
+             backing.entries.push(MemEntry { addr, length: CHUNK as u32, _padding: 0 });
+         }
+         backing.physical = backing.entries[0].addr;
+@@ -214,13 +189,13 @@ impl GuestBacking {
+ 
+     pub fn entries(&self) -> &[MemEntry] { &self.entries }
+ 
+-    /// Kernel-mode VA of the whole backing (cached). IRQL <= DISPATCH_LEVEL.
++    /// Kernel-mode VA of the whole backing (write-combined). IRQL <= DISPATCH_LEVEL.
+     pub fn kernel_address(&self) -> Result<NonNull<u8>, NtStatus> {
+         if let Some(ptr) = self.kernel_va { return Ok(ptr); }
+         let mut map = self.kernel_map.lock();
+         if let Some(ptr) = *map { return Ok(ptr); }
+         let ptr = match microseh::try_seh(|| mm_map_locked_pages_specify_cache(
+-            &self.mdl, false, MEMORY_CACHING_TYPE::MmCached, None)) {
++            &self.mdl, false, MEMORY_CACHING_TYPE::MmWriteCombined, None)) {
+             Ok(Some(ptr)) => ptr,
+             Ok(None) => return Err(NtStatus(STATUS::NO_MEMORY)),
+             Err(e) => return Err(e.into()),
+@@ -233,7 +208,7 @@ impl GuestBacking {
+         let mut mapping = self.mapping.lock();
+         if mapping.is_some() { return Err(NtStatus(STATUS::ALREADY_COMMITTED)); }
+         let ptr = match microseh::try_seh(|| mm_map_locked_pages_specify_cache(
+-            &self.mdl, true, MEMORY_CACHING_TYPE::MmCached, None)) {
++            &self.mdl, true, MEMORY_CACHING_TYPE::MmWriteCombined, None)) {
+             Ok(Some(ptr)) => ptr,
+             Ok(None) => return Err(NtStatus(STATUS::NO_MEMORY)),
+             Err(e) => return Err(e.into()),

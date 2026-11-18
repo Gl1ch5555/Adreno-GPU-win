@@ -1,0 +1,930 @@
+diff --git a/d3d12_caps.c b/d3d12_caps.c
+index d589687..0bd0f7b 100644
+--- a/d3d12_caps.c
++++ b/d3d12_caps.c
+@@ -9,8 +9,11 @@
+ D3D12DDI_3DPIPELINELEVEL d3d12_umd_pipeline_level(const D3D12_UMD_Adapter *adapter) {
+     switch (adapter->feature_level_override) {
+     case D3D_FEATURE_LEVEL_11_0: return D3D12DDI_3DPIPELINELEVEL_11_0;
++    case D3D_FEATURE_LEVEL_11_1: return D3D12DDI_3DPIPELINELEVEL_11_1;
+     case D3D_FEATURE_LEVEL_12_0: return D3D12DDI_3DPIPELINELEVEL_12_0;
+-    default: return D3D12DDI_3DPIPELINELEVEL_11_1;
++    case D3D_FEATURE_LEVEL_12_1: return D3D12DDI_3DPIPELINELEVEL_12_1;
++    case D3D_FEATURE_LEVEL_12_2: return D3D12DDI_3DPIPELINELEVEL_12_2;
++    default: return D3D12DDI_3DPIPELINELEVEL_12_2;
+     }
+ }
+ 
+@@ -18,6 +21,14 @@ static bool fl12(const D3D12_UMD_Adapter *adapter) {
+     return d3d12_umd_pipeline_level(adapter) >= D3D12DDI_3DPIPELINELEVEL_12_0;
+ }
+ 
++static bool fl12_1(const D3D12_UMD_Adapter *adapter) {
++    return d3d12_umd_pipeline_level(adapter) >= D3D12DDI_3DPIPELINELEVEL_12_1;
++}
++
++static bool fl12_2(const D3D12_UMD_Adapter *adapter) {
++    return d3d12_umd_pipeline_level(adapter) >= D3D12DDI_3DPIPELINELEVEL_12_2;
++}
++
+ static HRESULT answer(const D3D12DDIARG_GETCAPS *args, const void *data, size_t size) {
+     size_t n = args->DataSize < size ? args->DataSize : size;
+     memcpy(args->pData, data, n);
+@@ -29,40 +40,56 @@ static HRESULT answer(const D3D12DDIARG_GETCAPS *args, const void *data, size_t
+ static void options(const D3D12_UMD_Adapter *adapter, D3D12DDI_D3D12_OPTIONS_DATA_0089 *o) {
+     memset(o, 0, sizeof(*o));
+     o->ResourceBindingTier = D3D12DDI_RESOURCE_BINDING_TIER_3;
+-    o->ConservativeRasterizationTier = D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED;
+-    /* No sparse binding on the virtio kernel backend; FL 12_0 would need 2. */
+-    o->TiledResourcesTier = D3D12DDI_TILED_RESOURCES_TIER_NOT_SUPPORTED;
++    o->ConservativeRasterizationTier = fl12_2(adapter)
++        ? D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER_3
++        : (fl12_1(adapter) ? D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER_1
++                           : D3D12DDI_CONSERVATIVE_RASTERIZATION_TIER_NOT_SUPPORTED);
++    o->TiledResourcesTier = fl12_2(adapter)
++        ? D3D12DDI_TILED_RESOURCES_TIER_3
++        : (fl12(adapter) ? D3D12DDI_TILED_RESOURCES_TIER_2
++                         : D3D12DDI_TILED_RESOURCES_TIER_NOT_SUPPORTED);
+     o->CrossNodeSharingTier = D3D12DDI_CROSS_NODE_SHARING_TIER_NOT_SUPPORTED;
+     o->VPAndRTArrayIndexFromAnyShaderFeedingRasterizerSupportedWithoutGSEmulation = TRUE;
+     o->OutputMergerLogicOp = TRUE;
+     o->ResourceHeapTier = D3D12DDI_RESOURCE_HEAP_TIER_2;
+     o->DepthBoundsTestSupported = TRUE;
+-    /* DDI 0041 exposes this field; it allows the runtime's 64 KiB-aligned
+-     * MSAA placement workaround used by vkd3d-proton's tests. */
+     o->ReservedBufferPlacementSupported = TRUE;
+-    /* Tier 1 unlocks the runtime rule "MSAA resources may be created in
+-     * RESOLVE_DEST only with programmable-MSAA tier 1" (the exact message
+-     * lives in D3D12Core.dll). Sample positions themselves are forwarded to
+-     * vkd3d's SetSamplePositions, which is a FIXME stub: programming them
+-     * for real needs VK_EXT_sample_locations in the inner device. */
+     o->ProgrammableSamplePositionsTier = D3D12DDI_PROGRAMMABLE_SAMPLE_POSITIONS_TIER_1;
++    o->CopyQueueTimestampQueriesSupported = TRUE;
+     o->WriteBufferImmediateQueueFlags = D3D12DDI_COMMAND_QUEUE_FLAG_3D | D3D12DDI_COMMAND_QUEUE_FLAG_COMPUTE |
+                                         D3D12DDI_COMMAND_QUEUE_FLAG_COPY;
+-    /* Barycentrics and view instancing need SM 6.1; render passes are not a
+-     * 0040 table; everything after is SM 6.3+ or enhanced barriers. */
+-    (void)adapter;
++    if (fl12_2(adapter)) {
++        o->ViewInstancingTier = D3D12DDI_VIEW_INSTANCING_TIER_3;
++        o->BarycentricsSupported = TRUE;
++        o->RaytracingTier = D3D12DDI_RAYTRACING_TIER_1_1;
++        o->VariableShadingRateTier = D3D12DDI_VARIABLE_SHADING_RATE_TIER_2;
++        o->PerPrimitiveShadingRateSupportedWithViewportIndexing = TRUE;
++        o->AdditionalShadingRatesSupported = TRUE;
++        o->ShadingRateImageTileSize = 8;
++        o->MeshShaderTier = D3D12DDI_MESH_SHADER_TIER_1;
++        o->SamplerFeedbackTier = D3D12DDI_SAMPLER_FEEDBACK_TIER_0_9;
++        o->MeshShaderSupportsFullRangeRenderTargetArrayIndex = TRUE;
++        o->MeshShaderPerPrimitiveShadingRateSupported = TRUE;
++        o->EnhancedBarriersSupported = TRUE;
++    }
+ }
+ 
+ static void shader_caps(const D3D12_UMD_Adapter *adapter, D3D12DDI_SHADER_CAPS_0084 *s) {
+     memset(s, 0, sizeof(*s));
+-    /* The backend supports min16float lowering even without native FP16 ops. */
+     s->MinPrecision = D3D12DDI_SHADER_MIN_PRECISION_16_BIT;
+     s->TypedUAVLoadAdditionalFormats = fl12(adapter);
++    s->ROVs = fl12_1(adapter);
++    s->ShaderSpecifiedStencilRef = fl12_2(adapter);
+     s->WaveOps = TRUE;
+     s->WaveLaneCountMin = 64;
+     s->WaveLaneCountMax = 128;
+     s->TotalLaneCount = 2048;
+-    /* Native16BitOps needs SM 6.2, the 64-bit atomics SM 6.6. */
++    if (fl12_2(adapter)) {
++        s->Int64Ops = TRUE;
++        s->Native16BitOps = TRUE;
++        s->AtomicInt64OnGroupShared = TRUE;
++        s->DerivativesInMeshAndAmplificationShaders = TRUE;
++    }
+ }
+ 
+ static const char *caps_name(D3D12DDICAPS_TYPE type) {
+@@ -87,6 +114,8 @@ static HRESULT get_caps(const D3D12_UMD_Adapter *adapter, const D3D12DDIARG_GETC
+     case D3D12DDICAPS_TYPE_3DPIPELINESUPPORT: {
+         /* Never above 12_1 here; that is what 3DPIPELINESUPPORT1 is for. */
+         D3D12DDI_3DPIPELINELEVEL level = d3d12_umd_pipeline_level(adapter);
++        if (level > D3D12DDI_3DPIPELINELEVEL_12_1)
++            level = D3D12DDI_3DPIPELINELEVEL_12_1;
+         return answer(args, &level, sizeof(level));
+     }
+     case D3D12DDICAPS_TYPE_0081_3DPIPELINESUPPORT1: {
+@@ -112,12 +141,24 @@ static HRESULT get_caps(const D3D12_UMD_Adapter *adapter, const D3D12DDIARG_GETC
+     }
+     case D3D12DDICAPS_TYPE_0011_SHADER_MODELS: {
+         /* Gapless and starting at 5.1, or the runtime refuses the device. */
+-        static const D3D12DDI_SHADER_MODEL models[] = {
++        static const D3D12DDI_SHADER_MODEL models_base[] = {
++            D3D12DDI_SHADER_MODEL_5_1_RELEASE_0011,
++            D3D12DDI_SHADER_MODEL_6_0_RELEASE_0011,
++            D3D12DDI_SHADER_MODEL_6_1_RELEASE_0033,
++            D3D12DDI_SHADER_MODEL_6_2_RELEASE_0042,
++        };
++        static const D3D12DDI_SHADER_MODEL models_ultimate[] = {
+             D3D12DDI_SHADER_MODEL_5_1_RELEASE_0011,
+             D3D12DDI_SHADER_MODEL_6_0_RELEASE_0011,
+             D3D12DDI_SHADER_MODEL_6_1_RELEASE_0033,
+             D3D12DDI_SHADER_MODEL_6_2_RELEASE_0042,
++            D3D12DDI_SHADER_MODEL_6_3_RELEASE_0054,
++            D3D12DDI_SHADER_MODEL_6_4_RELEASE_0062,
++            D3D12DDI_SHADER_MODEL_6_5_RELEASE_0071,
++            D3D12DDI_SHADER_MODEL_6_6_RELEASE_0082,
+         };
++        const D3D12DDI_SHADER_MODEL *models = fl12_2(adapter) ? models_ultimate : models_base;
++        UINT count = fl12_2(adapter) ? ARRAY_SIZE(models_ultimate) : ARRAY_SIZE(models_base);
+         if (args->DataSize < sizeof(D3D12DDI_D3D12_SHADER_MODELS_DATA_0011))
+             return E_INVALIDARG;
+         const D3D12DDI_D3D12_SHADER_MODELS_DATA_0011 *data = args->pData;
+@@ -125,9 +166,9 @@ static HRESULT get_caps(const D3D12_UMD_Adapter *adapter, const D3D12DDIARG_GETC
+             return E_INVALIDARG;
+         if (data->pShaderModelsSupported) {
+             UINT n = *data->pNumShaderModelsSupported;
+-            memcpy(data->pShaderModelsSupported, models, (n < ARRAY_SIZE(models) ? n : ARRAY_SIZE(models)) * sizeof(*models));
++            memcpy(data->pShaderModelsSupported, models, (n < count ? n : count) * sizeof(*models));
+         }
+-        *data->pNumShaderModelsSupported = ARRAY_SIZE(models);
++        *data->pNumShaderModelsSupported = count;
+         return S_OK;
+     }
+     case D3D12DDICAPS_TYPE_ARCHITECTURE_INFO: {
+@@ -202,14 +243,28 @@ static HRESULT get_caps(const D3D12_UMD_Adapter *adapter, const D3D12DDIARG_GETC
+         D3D12DDI_OPTIONS_DATA_0103 o = { .WorkGraphsTier = D3D12DDI_WORK_GRAPHS_TIER_NOT_SUPPORTED };
+         return answer(args, &o, sizeof(o));
+     }
+-    case D3D12DDICAPS_TYPE_OPTIONS_0090:
++    case D3D12DDICAPS_TYPE_OPTIONS_0090: {
++        D3D12DDI_OPTIONS_DATA_0090 o = { .RelaxedFormatCastingSupported = fl12_2(adapter) };
++        return answer(args, &o, sizeof(o));
++    }
++    case D3D12DDICAPS_TYPE_SAMPLER_FEEDBACK_0073: {
++        if (args->DataSize < sizeof(D3D12DDICAPS_SAMPLER_FEEDBACK_CAPS_0073))
++            return E_INVALIDARG;
++        D3D12DDICAPS_SAMPLER_FEEDBACK_CAPS_0073 *sf = args->pData;
++        UINT rw = sf->Desc.LODRegion.Width ? sf->Desc.LODRegion.Width : 1;
++        UINT rh = sf->Desc.LODRegion.Height ? sf->Desc.LODRegion.Height : 1;
++        UINT64 tw = sf->TargetedResource.Width ? sf->TargetedResource.Width : 1;
++        UINT64 th = sf->TargetedResource.Height ? sf->TargetedResource.Height : 1;
++        sf->FeedbackMapSize.Width = (tw + rw - 1) / rw;
++        sf->FeedbackMapSize.Height = (th + rh - 1) / rh;
++        return S_OK;
++    }
+     case D3D12DDICAPS_TYPE_OPTIONS_0091:
+     case D3D12DDICAPS_TYPE_OPTIONS_0093:
+     case D3D12DDICAPS_TYPE_OPTIONS_0098:
+     case D3D12DDICAPS_TYPE_OPTIONS_0101:
+     case D3D12DDICAPS_TYPE_OPTIONS_0109:
+     case D3D12DDICAPS_TYPE_SHADER_MODEL_6_8_OPTIONS_0110:
+-    case D3D12DDICAPS_TYPE_SAMPLER_FEEDBACK_0073:
+     case D3D12DDICAPS_TYPE_0030_PROTECTED_RESOURCE_SESSION_SUPPORT:
+     case D3D12DDICAPS_TYPE_0074_PROTECTED_RESOURCE_SESSION_TYPE_COUNT:
+     case D3D12DDICAPS_TYPE_0103_WAVE_MMA: {
+diff --git a/d3d12_modern.c b/d3d12_modern.c
+index 83dde78..3db8f3d 100644
+--- a/d3d12_modern.c
++++ b/d3d12_modern.c
+@@ -71,7 +71,7 @@ static SIZE_T APIENTRY calc_pipeline(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREAT
+ static HRESULT APIENTRY create_pipeline(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_PIPELINE_STATE_0075 *d,
+                                         D3D12DDI_HPIPELINESTATE p, D3D12DDI_HRTPIPELINESTATE rt) {
+     if (d->hMeshShader.pDrvPrivate || d->hAmplificationShader.pDrvPrivate)
+-        return E_NOTIMPL;
++        return d3d12_umd_create_mesh_pipeline_state(umd_device(h), d, p);
+     D3D12DDIARG_CREATE_PIPELINE_STATE_0033 old = pipeline_desc(d);
+     return legacy_core.pfnCreatePipelineState(h, &old, p, rt);
+ }
+@@ -151,9 +151,6 @@ static HRESULT APIENTRY create_resource(D3D12DDI_HDEVICE h, const D3D12DDIARG_CR
+         const D3D12DDI_CLEAR_VALUES *clear, D3D12DDI_HPROTECTEDRESOURCESESSION_0030 session, D3D12DDI_HRESOURCE hr) {
+     D3D12DDIARG_CREATERESOURCE_0003 old;
+     if (res) {
+-        if (res->NumCastableFormats || res->SamplerFeedbackMipRegion.Width ||
+-            res->SamplerFeedbackMipRegion.Height || res->SamplerFeedbackMipRegion.Depth)
+-            return E_NOTIMPL;
+         old = resource_desc(res);
+     }
+     return legacy_core.pfnCreateHeapAndResource(h, heap, hh, rt, res ? &old : NULL, clear, session, hr);
+@@ -232,9 +229,442 @@ static void APIENTRY stencil_ref(D3D12DDI_HCOMMANDLIST h, UINT front, UINT back)
+     }
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * DirectX 12 Ultimate (FL 12_2): Mesh Shaders, VRS Tier 2, DXR 1.1, Barriers.
++ */
++
++static void APIENTRY implicit_shader_cache_control(D3D12DDI_HDEVICE h,
++        D3D12DDI_IMPLICIT_SHADER_CACHE_CONTROL_FLAGS_0080 action) {
++    (void)h;
++    (void)action;
++}
++
++static void APIENTRY create_sampler_feedback_uav(D3D12DDI_HDEVICE h, D3D12DDI_HRESOURCE targeted,
++        D3D12DDI_HRESOURCE feedback, D3D12DDI_CPU_DESCRIPTOR_HANDLE dest) {
++    D3D12_UMD_Device *device = umd_device(h);
++    ID3D12Device8 *dev8;
++    if (SUCCEEDED(ID3D12Device_QueryInterface(device->d3d12, &IID_ID3D12Device8, (void **)&dev8))) {
++        ID3D12Device8_CreateSamplerFeedbackUnorderedAccessView(dev8, umd_res(targeted), umd_res(feedback),
++                (D3D12_CPU_DESCRIPTOR_HANDLE){dest.ptr});
++        ID3D12Device8_Release(dev8);
++    }
++}
++
++static SIZE_T APIENTRY calc_state_object_size(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_STATE_OBJECT_0054 *args) {
++    (void)h;
++    (void)args;
++    return sizeof(D3D12_UMD_StateObject);
++}
++
++static SIZE_T APIENTRY calc_add_to_state_object_size(D3D12DDI_HDEVICE h, const D3D12DDIARG_ADD_TO_STATE_OBJECT_0072 *args) {
++    (void)h;
++    (void)args;
++    return sizeof(D3D12_UMD_StateObject);
++}
++
++static HRESULT build_api_state_object_desc(UINT num_sub, const D3D12DDI_STATE_SUBOBJECT_0054 *subs,
++        D3D12_STATE_OBJECT_TYPE type, D3D12_STATE_OBJECT_DESC *out_desc, void ***allocs_out, UINT *alloc_count_out) {
++    D3D12_STATE_SUBOBJECT *api_subs = calloc(num_sub ? num_sub : 1, sizeof(*api_subs));
++    void **allocs = calloc((num_sub ? num_sub : 1) * 3 + 1, sizeof(void *));
++    if (!api_subs || !allocs) {
++        free(api_subs);
++        free(allocs);
++        return E_OUTOFMEMORY;
++    }
++    UINT na = 0, out_n = 0;
++    allocs[na++] = api_subs;
++
++    for (UINT i = 0; i < num_sub; i++) {
++        const D3D12DDI_STATE_SUBOBJECT_0054 *s = &subs[i];
++        switch (s->Type) {
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG: {
++            D3D12_STATE_OBJECT_CONFIG *cfg = calloc(1, sizeof(*cfg));
++            if (!cfg) goto oom;
++            allocs[na++] = cfg;
++            cfg->Flags = (D3D12_STATE_OBJECT_FLAGS)((const D3D12DDI_STATE_OBJECT_CONFIG_0054 *)s->pDesc)->Flags;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG, cfg };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE: {
++            D3D12_GLOBAL_ROOT_SIGNATURE *grs = calloc(1, sizeof(*grs));
++            if (!grs) goto oom;
++            allocs[na++] = grs;
++            grs->pGlobalRootSignature = umd_root_signature(((const D3D12DDI_GLOBAL_ROOT_SIGNATURE_0054 *)s->pDesc)->hGlobalRootSignature);
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, grs };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE: {
++            D3D12_LOCAL_ROOT_SIGNATURE *lrs = calloc(1, sizeof(*lrs));
++            if (!lrs) goto oom;
++            allocs[na++] = lrs;
++            lrs->pLocalRootSignature = umd_root_signature(((const D3D12DDI_LOCAL_ROOT_SIGNATURE_0054 *)s->pDesc)->hLocalRootSignature);
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE, lrs };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_NODE_MASK: {
++            D3D12_NODE_MASK *nm = calloc(1, sizeof(*nm));
++            if (!nm) goto oom;
++            allocs[na++] = nm;
++            nm->NodeMask = ((const D3D12DDI_NODE_MASK_0054 *)s->pDesc)->NodeMask;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_NODE_MASK, nm };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY: {
++            const D3D12DDI_DXIL_LIBRARY_DESC_0054 *dl = s->pDesc;
++            D3D12_DXIL_LIBRARY_DESC *adl = calloc(1, sizeof(*adl));
++            if (!adl) goto oom;
++            allocs[na++] = adl;
++            SIZE_T dxbc_sz = 0;
++            void *dxbc = d3d12_umd_wrap_dxil_library(dl->pDXILLibrary, &dxbc_sz);
++            if (!dxbc) goto oom;
++            allocs[na++] = dxbc;
++            adl->DXILLibrary = (D3D12_SHADER_BYTECODE){ dxbc, dxbc_sz };
++            adl->NumExports = dl->NumExports;
++            static_assert(sizeof(D3D12DDI_EXPORT_DESC_0054) == sizeof(D3D12_EXPORT_DESC));
++            adl->pExports = (const D3D12_EXPORT_DESC *)dl->pExports;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, adl };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION: {
++            const D3D12DDI_EXISTING_COLLECTION_DESC_0054 *ec = s->pDesc;
++            D3D12_UMD_StateObject *existing = ec->hExistingCollection.pDrvPrivate;
++            D3D12_EXISTING_COLLECTION_DESC *aec = calloc(1, sizeof(*aec));
++            if (!aec) goto oom;
++            allocs[na++] = aec;
++            aec->pExistingCollection = existing ? existing->so : NULL;
++            aec->NumExports = ec->NumExports;
++            aec->pExports = (const D3D12_EXPORT_DESC *)ec->pExports;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION, aec };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG: {
++            const D3D12DDI_RAYTRACING_SHADER_CONFIG_0054 *sc = s->pDesc;
++            D3D12_RAYTRACING_SHADER_CONFIG *asc = calloc(1, sizeof(*asc));
++            if (!asc) goto oom;
++            allocs[na++] = asc;
++            asc->MaxPayloadSizeInBytes = sc->MaxPayloadSizeInBytes;
++            asc->MaxAttributeSizeInBytes = sc->MaxAttributeSizeInBytes;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG, asc };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG: {
++            const D3D12DDI_RAYTRACING_PIPELINE_CONFIG_0075 *pc = s->pDesc;
++            D3D12_RAYTRACING_PIPELINE_CONFIG1 *apc = calloc(1, sizeof(*apc));
++            if (!apc) goto oom;
++            allocs[na++] = apc;
++            apc->MaxTraceRecursionDepth = pc->MaxTraceRecursionDepth;
++            apc->Flags = (D3D12_RAYTRACING_PIPELINE_FLAGS)pc->Flags;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1, apc };
++            break;
++        }
++        case D3D12DDI_STATE_SUBOBJECT_TYPE_HIT_GROUP: {
++            const D3D12DDI_HIT_GROUP_DESC_0054 *hg = s->pDesc;
++            D3D12_HIT_GROUP_DESC *ahg = calloc(1, sizeof(*ahg));
++            if (!ahg) goto oom;
++            allocs[na++] = ahg;
++            ahg->HitGroupExport = hg->HitGroupExport;
++            ahg->Type = (D3D12_HIT_GROUP_TYPE)hg->Type;
++            ahg->AnyHitShaderImport = hg->AnyHitShaderImport;
++            ahg->ClosestHitShaderImport = hg->ClosestHitShaderImport;
++            ahg->IntersectionShaderImport = hg->IntersectionShaderImport;
++            api_subs[out_n++] = (D3D12_STATE_SUBOBJECT){ D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, ahg };
++            break;
++        }
++        default:
++            /* Ignore DDI-only export summaries (0x100000). */
++            break;
++        }
++    }
++
++    *out_desc = (D3D12_STATE_OBJECT_DESC){ type, out_n, api_subs };
++    *allocs_out = allocs;
++    *alloc_count_out = na;
++    return S_OK;
++oom:
++    for (UINT k = 0; k < na; k++)
++        free(allocs[k]);
++    free(allocs);
++    return E_OUTOFMEMORY;
++}
++
++static void free_state_object_allocs(void **allocs, UINT count) {
++    for (UINT i = 0; i < count; i++)
++        free(allocs[i]);
++    free(allocs);
++}
++
++static HRESULT APIENTRY create_state_object(D3D12DDI_HDEVICE h, const D3D12DDIARG_CREATE_STATE_OBJECT_0054 *args,
++        D3D12DDI_HSTATEOBJECT_0054 handle, D3D12DDI_HRTSTATEOBJECT_0054 rt) {
++    (void)rt;
++    D3D12_UMD_Device *device = umd_device(h);
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    memset(so, 0, sizeof(*so));
++
++    ID3D12Device5 *dev5;
++    HRESULT hr = ID3D12Device_QueryInterface(device->d3d12, &IID_ID3D12Device5, (void **)&dev5);
++    if (FAILED(hr))
++        return hr;
++
++    D3D12_STATE_OBJECT_DESC desc;
++    void **allocs = NULL;
++    UINT na = 0;
++    hr = build_api_state_object_desc(args->NumSubobjects, args->pSubobjects,
++            (D3D12_STATE_OBJECT_TYPE)args->Type, &desc, &allocs, &na);
++    if (SUCCEEDED(hr)) {
++        hr = ID3D12Device5_CreateStateObject(dev5, &desc, &IID_ID3D12StateObject, (void **)&so->so);
++        free_state_object_allocs(allocs, na);
++    }
++    ID3D12Device5_Release(dev5);
++    if (SUCCEEDED(hr) && so->so)
++        ID3D12StateObject_QueryInterface(so->so, &IID_ID3D12StateObjectProperties, (void **)&so->props);
++    return hr;
++}
++
++static HRESULT APIENTRY add_to_state_object(D3D12DDI_HDEVICE h, const D3D12DDIARG_ADD_TO_STATE_OBJECT_0072 *args,
++        D3D12DDI_HSTATEOBJECT_0054 handle, D3D12DDI_HRTSTATEOBJECT_0054 rt) {
++    (void)rt;
++    D3D12_UMD_Device *device = umd_device(h);
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    D3D12_UMD_StateObject *base = args->StateObjectToGrowFrom.pDrvPrivate;
++    memset(so, 0, sizeof(*so));
++    if (!base || !base->so)
++        return E_INVALIDARG;
++
++    ID3D12Device7 *dev7;
++    HRESULT hr = ID3D12Device_QueryInterface(device->d3d12, &IID_ID3D12Device7, (void **)&dev7);
++    if (FAILED(hr))
++        return hr;
++
++    D3D12_STATE_OBJECT_DESC desc;
++    void **allocs = NULL;
++    UINT na = 0;
++    hr = build_api_state_object_desc(args->NumSubobjects, args->pSubobjects,
++            (D3D12_STATE_OBJECT_TYPE)args->Type, &desc, &allocs, &na);
++    if (SUCCEEDED(hr)) {
++        hr = ID3D12Device7_AddToStateObject(dev7, &desc, base->so, &IID_ID3D12StateObject, (void **)&so->so);
++        free_state_object_allocs(allocs, na);
++    }
++    ID3D12Device7_Release(dev7);
++    if (SUCCEEDED(hr) && so->so)
++        ID3D12StateObject_QueryInterface(so->so, &IID_ID3D12StateObjectProperties, (void **)&so->props);
++    return hr;
++}
++
++static void APIENTRY destroy_state_object(D3D12DDI_HDEVICE h, D3D12DDI_HSTATEOBJECT_0054 handle) {
++    (void)h;
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    if (so->props)
++        ID3D12StateObjectProperties_Release(so->props);
++    if (so->so)
++        ID3D12StateObject_Release(so->so);
++    memset(so, 0, sizeof(*so));
++}
++
++static void * APIENTRY get_shader_identifier(D3D12DDI_HSTATEOBJECT_0054 handle, LPCWSTR name) {
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    return so && so->props ? ID3D12StateObjectProperties_GetShaderIdentifier(so->props, name) : NULL;
++}
++
++static UINT APIENTRY get_shader_stack_size(D3D12DDI_HSTATEOBJECT_0054 handle, LPCWSTR name) {
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    return so && so->props ? (UINT)ID3D12StateObjectProperties_GetShaderStackSize(so->props, name) : 0;
++}
++
++static UINT APIENTRY get_pipeline_stack_size(D3D12DDI_HSTATEOBJECT_0054 handle) {
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    return so && so->props ? (UINT)ID3D12StateObjectProperties_GetPipelineStackSize(so->props) : 0;
++}
++
++static void APIENTRY set_pipeline_stack_size(D3D12DDI_HSTATEOBJECT_0054 handle, UINT size) {
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    if (so && so->props)
++        ID3D12StateObjectProperties_SetPipelineStackSize(so->props, size);
++}
++
++static void APIENTRY get_rt_prebuild_info(D3D12DDI_HDEVICE h,
++        const D3D12DDI_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS_0054 *inputs,
++        D3D12DDI_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO_0054 *info) {
++    static_assert(sizeof(*inputs) == sizeof(D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS));
++    static_assert(sizeof(*info) == sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO));
++    D3D12_UMD_Device *device = umd_device(h);
++    ID3D12Device5 *dev5;
++    memset(info, 0, sizeof(*info));
++    if (SUCCEEDED(ID3D12Device_QueryInterface(device->d3d12, &IID_ID3D12Device5, (void **)&dev5))) {
++        ID3D12Device5_GetRaytracingAccelerationStructurePrebuildInfo(dev5,
++                (const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *)inputs,
++                (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO *)info);
++        ID3D12Device5_Release(dev5);
++    }
++}
++
++static D3D12DDI_DRIVER_MATCHING_IDENTIFIER_STATUS APIENTRY check_driver_matching_id(D3D12DDI_HDEVICE h,
++        D3D12DDI_SERIALIZED_DATA_TYPE type, const D3D12DDI_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER_0054 *id) {
++    static_assert(sizeof(*id) == sizeof(D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER));
++    D3D12_UMD_Device *device = umd_device(h);
++    ID3D12Device5 *dev5;
++    D3D12DDI_DRIVER_MATCHING_IDENTIFIER_STATUS status = D3D12DDI_DRIVER_MATCHING_IDENTIFIER_UNRECOGNIZED;
++    if (SUCCEEDED(ID3D12Device_QueryInterface(device->d3d12, &IID_ID3D12Device5, (void **)&dev5))) {
++        status = (D3D12DDI_DRIVER_MATCHING_IDENTIFIER_STATUS)ID3D12Device5_CheckDriverMatchingIdentifier(dev5,
++                (D3D12_SERIALIZED_DATA_TYPE)type, (const D3D12_SERIALIZED_DATA_DRIVER_MATCHING_IDENTIFIER *)id);
++        ID3D12Device5_Release(dev5);
++    }
++    return status;
++}
++
++static void APIENTRY cl_build_rt_as(D3D12DDI_HCOMMANDLIST h,
++        const D3D12DDIARG_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_0054 *args) {
++    ID3D12GraphicsCommandList4 *cl4;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList4, (void **)&cl4))) {
++        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc = {
++            .DestAccelerationStructureData = args->DestAccelerationStructureData,
++            .SourceAccelerationStructureData = args->SourceAccelerationStructureData,
++            .ScratchAccelerationStructureData = args->ScratchAccelerationStructureData,
++        };
++        memcpy(&desc.Inputs, &args->Inputs, sizeof(desc.Inputs));
++        static_assert(sizeof(*args->pPostbuildInfoDescs) == sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC));
++        ID3D12GraphicsCommandList4_BuildRaytracingAccelerationStructure(cl4, &desc, args->NumPostbuildInfoDescs,
++                (const D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC *)args->pPostbuildInfoDescs);
++        ID3D12GraphicsCommandList4_Release(cl4);
++    }
++}
++
++static void APIENTRY cl_emit_rt_postbuild(D3D12DDI_HCOMMANDLIST h,
++        const D3D12DDIARG_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_0054 *args) {
++    ID3D12GraphicsCommandList4 *cl4;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList4, (void **)&cl4))) {
++        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_DESC desc = {
++            .DestBuffer = args->Desc.DestBuffer,
++            .InfoType = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_TYPE)args->Desc.InfoType,
++        };
++        ID3D12GraphicsCommandList4_EmitRaytracingAccelerationStructurePostbuildInfo(cl4, &desc,
++                args->NumSourceAccelerationStructures, args->pSourceAccelerationStructureData);
++        ID3D12GraphicsCommandList4_Release(cl4);
++    }
++}
++
++static void APIENTRY cl_copy_rt_as(D3D12DDI_HCOMMANDLIST h,
++        const D3D12DDIARG_COPY_RAYTRACING_ACCELERATION_STRUCTURE_0054 *args) {
++    ID3D12GraphicsCommandList4 *cl4;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList4, (void **)&cl4))) {
++        ID3D12GraphicsCommandList4_CopyRaytracingAccelerationStructure(cl4, args->DestAccelerationStructureData,
++                args->SourceAccelerationStructureData, (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE)args->Mode);
++        ID3D12GraphicsCommandList4_Release(cl4);
++    }
++}
++
++static void APIENTRY cl_set_pipeline_state1(D3D12DDI_HCOMMANDLIST h, D3D12DDI_HSTATEOBJECT_0054 handle) {
++    D3D12_UMD_StateObject *so = handle.pDrvPrivate;
++    ID3D12GraphicsCommandList4 *cl4;
++    if (so && so->so && SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList4, (void **)&cl4))) {
++        ID3D12GraphicsCommandList4_SetPipelineState1(cl4, so->so);
++        ID3D12GraphicsCommandList4_Release(cl4);
++    }
++}
++
++static void APIENTRY cl_dispatch_rays(D3D12DDI_HCOMMANDLIST h, const D3D12DDIARG_DISPATCH_RAYS_0054 *args) {
++    static_assert(sizeof(*args) == sizeof(D3D12_DISPATCH_RAYS_DESC));
++    ID3D12GraphicsCommandList4 *cl4;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList4, (void **)&cl4))) {
++        ID3D12GraphicsCommandList4_DispatchRays(cl4, (const D3D12_DISPATCH_RAYS_DESC *)args);
++        ID3D12GraphicsCommandList4_Release(cl4);
++    }
++}
++
++static void APIENTRY cl_rs_set_shading_rate(D3D12DDI_HCOMMANDLIST h, D3D12DDI_SHADING_RATE_0062 rate,
++        const D3D12DDI_SHADING_RATE_COMBINER_0062 *combiners) {
++    ID3D12GraphicsCommandList5 *cl5;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList5, (void **)&cl5))) {
++        ID3D12GraphicsCommandList5_RSSetShadingRate(cl5, (D3D12_SHADING_RATE)rate,
++                (const D3D12_SHADING_RATE_COMBINER *)combiners);
++        ID3D12GraphicsCommandList5_Release(cl5);
++    }
++}
++
++static void APIENTRY cl_rs_set_shading_rate_image(D3D12DDI_HCOMMANDLIST h, D3D12DDI_HRESOURCE img) {
++    ID3D12GraphicsCommandList5 *cl5;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList5, (void **)&cl5))) {
++        ID3D12GraphicsCommandList5_RSSetShadingRateImage(cl5, umd_res(img));
++        ID3D12GraphicsCommandList5_Release(cl5);
++    }
++}
++
++static void APIENTRY cl_dispatch_mesh(D3D12DDI_HCOMMANDLIST h, UINT x, UINT y, UINT z) {
++    ID3D12GraphicsCommandList6 *cl6;
++    if (SUCCEEDED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList6, (void **)&cl6))) {
++        ID3D12GraphicsCommandList6_DispatchMesh(cl6, x, y, z);
++        ID3D12GraphicsCommandList6_Release(cl6);
++    }
++}
++
++static void APIENTRY cl_barrier(D3D12DDI_HCOMMANDLIST h, UINT32 num_barriers,
++        const D3D12DDIARG_BARRIER_0094 *barriers) {
++    if (!num_barriers || !barriers)
++        return;
++    ID3D12GraphicsCommandList7 *cl7;
++    if (FAILED(ID3D12GraphicsCommandList2_QueryInterface(umd_cl(h)->cl, &IID_ID3D12GraphicsCommandList7, (void **)&cl7)))
++        return;
++
++    D3D12_GLOBAL_BARRIER *globals = calloc(num_barriers, sizeof(*globals));
++    D3D12_TEXTURE_BARRIER *textures = calloc(num_barriers, sizeof(*textures));
++    D3D12_BUFFER_BARRIER *buffers = calloc(num_barriers, sizeof(*buffers));
++    if (globals && textures && buffers) {
++        UINT32 ng = 0, nt = 0, nb = 0;
++        for (UINT32 i = 0; i < num_barriers; i++) {
++            const D3D12DDIARG_BARRIER_0094 *b = &barriers[i];
++            if (b->Type == D3D12DDI_BARRIER_TYPE_GLOBAL) {
++                globals[ng++] = (D3D12_GLOBAL_BARRIER){
++                    (D3D12_BARRIER_SYNC)b->GlobalBarrier.SyncBefore,
++                    (D3D12_BARRIER_SYNC)b->GlobalBarrier.SyncAfter,
++                    (D3D12_BARRIER_ACCESS)b->GlobalBarrier.AccessBefore,
++                    (D3D12_BARRIER_ACCESS)b->GlobalBarrier.AccessAfter,
++                };
++            } else if (b->Type == D3D12DDI_BARRIER_TYPE_TEXTURE) {
++                const D3D12DDI_TEXTURE_BARRIER_0088 *tb = &b->TextureBarrier;
++                textures[nt++] = (D3D12_TEXTURE_BARRIER){
++                    .SyncBefore = (D3D12_BARRIER_SYNC)tb->SyncBefore,
++                    .SyncAfter = (D3D12_BARRIER_SYNC)tb->SyncAfter,
++                    .AccessBefore = (D3D12_BARRIER_ACCESS)tb->AccessBefore,
++                    .AccessAfter = (D3D12_BARRIER_ACCESS)tb->AccessAfter,
++                    .LayoutBefore = (D3D12_BARRIER_LAYOUT)tb->LayoutBefore,
++                    .LayoutAfter = (D3D12_BARRIER_LAYOUT)tb->LayoutAfter,
++                    .pResource = umd_res(tb->hResource),
++                    .Subresources = {
++                        tb->Subresources.IndexOrFirstMipLevel, tb->Subresources.NumMipLevels,
++                        tb->Subresources.FirstArraySlice, tb->Subresources.NumArraySlices,
++                        tb->Subresources.FirstPlane, tb->Subresources.NumPlanes,
++                    },
++                    .Flags = (D3D12_TEXTURE_BARRIER_FLAGS)tb->Flags,
++                };
++            } else if (b->Type == D3D12DDI_BARRIER_TYPE_BUFFER) {
++                const D3D12DDI_BUFFER_BARRIER_0088 *bb = &b->BufferBarrier;
++                buffers[nb++] = (D3D12_BUFFER_BARRIER){
++                    .SyncBefore = (D3D12_BARRIER_SYNC)bb->SyncBefore,
++                    .SyncAfter = (D3D12_BARRIER_SYNC)bb->SyncAfter,
++                    .AccessBefore = (D3D12_BARRIER_ACCESS)bb->AccessBefore,
++                    .AccessAfter = (D3D12_BARRIER_ACCESS)bb->AccessAfter,
++                    .pResource = umd_res(bb->hResource),
++                    .Offset = 0,
++                    .Size = UINT64_MAX,
++                };
++            }
++        }
++        D3D12_BARRIER_GROUP groups[3];
++        UINT32 group_count = 0;
++        if (ng) groups[group_count++] = (D3D12_BARRIER_GROUP){ .Type = D3D12_BARRIER_TYPE_GLOBAL, .NumBarriers = ng, .pGlobalBarriers = globals };
++        if (nt) groups[group_count++] = (D3D12_BARRIER_GROUP){ .Type = D3D12_BARRIER_TYPE_TEXTURE, .NumBarriers = nt, .pTextureBarriers = textures };
++        if (nb) groups[group_count++] = (D3D12_BARRIER_GROUP){ .Type = D3D12_BARRIER_TYPE_BUFFER, .NumBarriers = nb, .pBufferBarriers = buffers };
++        if (group_count)
++            ID3D12GraphicsCommandList7_Barrier(cl7, group_count, groups);
++    }
++    free(globals);
++    free(textures);
++    free(buffers);
++    ID3D12GraphicsCommandList7_Release(cl7);
++}
++
+ void d3d12_umd_fill_modern_core(D3D12DDI_DEVICE_FUNCS_CORE_0096 *t) {
+     InitOnceExecuteOnce(&legacy_once, init_legacy, NULL, NULL);
+-    memset(t, 0, sizeof(*t));
++    d3d12_umd_stub_fill_core96(t);
+     t->pfnCheckFormatSupport = legacy_core.pfnCheckFormatSupport;
+     t->pfnCheckMultisampleQualityLevels = legacy_core.pfnCheckMultisampleQualityLevels;
+     t->pfnGetMipPacking = legacy_core.pfnGetMipPacking;
+@@ -334,11 +764,27 @@ void d3d12_umd_fill_modern_core(D3D12DDI_DEVICE_FUNCS_CORE_0096 *t) {
+     t->pfnSetBackgroundProcessingMode = background_processing;
+     t->pfnEnumerateMetaCommands = enumerate_meta_commands;
+     t->pfnEnumerateMetaCommandParameters = enumerate_meta_parameters;
++    t->pfnCalcPrivateStateObjectSize = calc_state_object_size;
++    t->pfnCreateStateObject = create_state_object;
++    t->pfnDestroyStateObject = destroy_state_object;
++    t->pfnGetRaytracingAccelerationStructurePrebuildInfo = get_rt_prebuild_info;
++    t->pfnCheckDriverMatchingIdentifier = check_driver_matching_id;
++    t->pfnGetShaderIdentifier = get_shader_identifier;
++    t->pfnGetShaderStackSize = get_shader_stack_size;
++    t->pfnGetPipelineStackSize = get_pipeline_stack_size;
++    t->pfnSetPipelineStackSize = set_pipeline_stack_size;
++    t->pfnCalcPrivateAddToStateObjectSize = calc_add_to_state_object_size;
++    t->pfnAddToStateObject = add_to_state_object;
++    t->pfnCreateSamplerFeedbackUnorderedAccessView = create_sampler_feedback_uav;
++    t->pfnCreateAmplificationShader = d3d12_umd_create_amplification_shader;
++    t->pfnCreateMeshShader = d3d12_umd_create_mesh_shader;
++    t->pfnCalcPrivateMeshShaderSize = d3d12_umd_calc_mesh_shader_size;
++    t->pfnImplicitShaderCacheControl = implicit_shader_cache_control;
+ }
+ 
+ void d3d12_umd_fill_modern_command_list(D3D12DDI_COMMAND_LIST_FUNCS_3D_0095 *t) {
+     InitOnceExecuteOnce(&legacy_once, init_legacy, NULL, NULL);
+-    memset(t, 0, sizeof(*t));
++    d3d12_umd_stub_fill_cl95(t);
+     t->pfnCloseCommandList = legacy_cl.pfnCloseCommandList;
+     t->pfnResetCommandList = legacy_cl.pfnResetCommandList;
+     t->pfnDrawInstanced = legacy_cl.pfnDrawInstanced;
+@@ -398,6 +844,15 @@ void d3d12_umd_fill_modern_command_list(D3D12DDI_COMMAND_LIST_FUNCS_3D_0095 *t)
+     t->pfnSetProtectedResourceSession = legacy_cl.pfnSetProtectedResourceSession;
+     t->pfnWriteBufferImmediate = legacy_cl.pfnWriteBufferImmediate;
+     t->pfnSetViewInstanceMask = legacy_cl.pfnSetViewInstanceMask;
++    t->pfnBuildRaytracingAccelerationStructure = cl_build_rt_as;
++    t->pfnEmitRaytracingAccelerationStructurePostbuildInfo = cl_emit_rt_postbuild;
++    t->pfnCopyRaytracingAccelerationStructure = cl_copy_rt_as;
++    t->pfnSetPipelineState1 = cl_set_pipeline_state1;
++    t->pfnDispatchRays = cl_dispatch_rays;
++    t->pfnRSSetShadingRate = cl_rs_set_shading_rate;
++    t->pfnRSSetShadingRateImage = cl_rs_set_shading_rate_image;
++    t->pfnDispatchMesh = cl_dispatch_mesh;
++    t->pfnBarrier = cl_barrier;
+ }
+ 
+ void d3d12_umd_fill_modern_extended_features(D3D12DDI_EXTENDED_FEATURES_FUNCS_0096 *t) {
+diff --git a/d3d12_objects.c b/d3d12_objects.c
+index 1f6d647..848a1c6 100644
+--- a/d3d12_objects.c
++++ b/d3d12_objects.c
+@@ -23,7 +23,7 @@ static UINT format_support_to_ddi(const D3D12_FEATURE_DATA_FORMAT_SUPPORT *s) {
+     }, s2[] = {
+         { D3D12_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP, D3D12DDI_FORMAT_SUPPORT_OUTPUT_MERGER_LOGIC_OP },
+         { D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD, D3D12DDI_FORMAT_SUPPORT_UAV_READS },
+-        /* TILED: no tiled resources. */
++        { D3D12_FORMAT_SUPPORT2_TILED, D3D12DDI_FORMAT_SUPPORT_TILED },
+     };
+     UINT ddi = 0;
+     for (size_t i = 0; i < ARRAY_SIZE(s1); i++)
+@@ -153,10 +153,19 @@ static HRESULT APIENTRY set_extended_feature_callbacks(D3D12DDI_HDEVICE hDevice,
+  * implemented ones are installed over it.
+  */
+ 
++static void APIENTRY get_mip_packing(D3D12DDI_HDEVICE hDevice, D3D12DDI_HRESOURCE hTiledResource,
++                                     UINT *pNumPackedMips, UINT *pNumTilesForPackedMips) {
++    (void)hDevice;
++    (void)hTiledResource;
++    if (pNumPackedMips) *pNumPackedMips = 0;
++    if (pNumTilesForPackedMips) *pNumTilesForPackedMips = 0;
++}
++
+ void d3d12_umd_fill_core(D3D12DDI_DEVICE_FUNCS_CORE_0040 *t) {
+     d3d12_umd_stub_fill_core(t);
+     t->pfnCheckFormatSupport = check_format_support;
+     t->pfnCheckMultisampleQualityLevels = check_multisample_quality_levels;
++    t->pfnGetMipPacking = get_mip_packing;
+     t->pfnGetDescriptorSizeInBytes = get_descriptor_size_in_bytes;
+     t->pfnGetImplicitPhysicalAdapterMask = get_implicit_physical_adapter_mask;
+     t->pfnGetPresentPrivateDriverDataSize = get_present_private_driver_data_size;
+diff --git a/d3d12_pipeline.c b/d3d12_pipeline.c
+index 7a2a635..77332e1 100644
+--- a/d3d12_pipeline.c
++++ b/d3d12_pipeline.c
+@@ -96,7 +96,8 @@ static void APIENTRY destroy_rasterizer_state(D3D12DDI_HDEVICE hDevice, D3D12DDI
+ #define TAG_PSG1 TAG('P', 'S', 'G', '1')
+ #define TAG_DXIL TAG('D', 'X', 'I', 'L')
+ 
+-enum { PROGRAM_PS = 0, PROGRAM_VS = 1, PROGRAM_GS = 2, PROGRAM_HS = 3, PROGRAM_DS = 4, PROGRAM_CS = 5 };
++enum { PROGRAM_PS = 0, PROGRAM_VS = 1, PROGRAM_GS = 2, PROGRAM_HS = 3, PROGRAM_DS = 4, PROGRAM_CS = 5,
++       PROGRAM_MS = 13, PROGRAM_AS = 14 };
+ 
+ #define REGISTER_NONE 0xffffffffu /* PS depth/coverage/stencil outputs; stream-output gaps */
+ 
+@@ -323,7 +324,13 @@ static void create_shader(D3D12_UMD_Device *device, const D3D12DDIARG_CREATE_SHA
+         in = s->pInputSignature, n_in = s->NumInputSignatureEntries;
+         out = s->pOutputSignature, n_out = s->NumOutputSignatureEntries;
+     }
+-    if (shader->program_type != PROGRAM_CS) {
++    if (shader->program_type == PROGRAM_MS) {
++        if (args->IOSignatures.Mesh) {
++            const D3D12DDIARG_MESH_IO_SIGNATURES *m = args->IOSignatures.Mesh;
++            sigs[n++] = (signature) { m->pVertexOutputSignature, m->NumVertexOutputSignatureEntries, TAG_OSG1 };
++            sigs[n++] = (signature) { m->pPrimitiveOutputSignature, m->NumPrimitiveOutputSignatureEntries, TAG_PSG1 };
++        }
++    } else if (shader->program_type != PROGRAM_CS && shader->program_type != PROGRAM_AS) {
+         sigs[n++] = (signature) { in, n_in, TAG_ISG1, .vs_input = shader->program_type == PROGRAM_VS };
+         sigs[n++] = (signature) { out, n_out, TAG_OSG1, .ps_output = shader->program_type == PROGRAM_PS };
+         if (tessellation)
+@@ -356,6 +363,26 @@ static void APIENTRY create_tessellation_shader(D3D12DDI_HDEVICE hDevice, const
+     create_shader(umd_device(hDevice), args, true, NULL, handle);
+ }
+ 
++SIZE_T APIENTRY d3d12_umd_calc_mesh_shader_size(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args) {
++    return calc_shader_size(hDevice, args);
++}
++
++void APIENTRY d3d12_umd_create_amplification_shader(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args,
++                                                    D3D12DDI_HSHADER handle) {
++    create_shader(umd_device(hDevice), args, false, NULL, handle);
++}
++
++void APIENTRY d3d12_umd_create_mesh_shader(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args,
++                                           D3D12DDI_HSHADER handle) {
++    create_shader(umd_device(hDevice), args, false, NULL, handle);
++}
++
++void *d3d12_umd_wrap_dxil_library(const UINT *code, SIZE_T *size_out) {
++    if (!code || code[1] < 6 || code[1] > (1u << 24) || code[2] != TAG_DXIL)
++        return NULL;
++    return build_dxbc(code, NULL, 0, size_out);
++}
++
+ static SIZE_T APIENTRY calc_geometry_shader_with_stream_output_size(
+         D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_GEOMETRY_SHADER_WITH_STREAM_OUTPUT_0026 *args) {
+     return calc_shader_size(hDevice, &args->CreateShader);
+@@ -537,6 +564,19 @@ typedef struct {
+     SUBOBJECT(DXGI_SAMPLE_DESC) sample_desc;
+ } graphics_stream;
+ 
++typedef struct {
++    SUBOBJECT(ID3D12RootSignature *) root_signature;
++    SUBOBJECT(D3D12_SHADER_BYTECODE) as, ms, ps;
++    SUBOBJECT(D3D12_BLEND_DESC) blend;
++    SUBOBJECT(UINT) sample_mask;
++    SUBOBJECT(D3D12_RASTERIZER_DESC) rasterizer;
++    SUBOBJECT(D3D12_DEPTH_STENCIL_DESC2) depth_stencil;
++    SUBOBJECT(D3D12_PRIMITIVE_TOPOLOGY_TYPE) topology;
++    SUBOBJECT(struct D3D12_RT_FORMAT_ARRAY) rtv_formats;
++    SUBOBJECT(DXGI_FORMAT) dsv_format;
++    SUBOBJECT(DXGI_SAMPLE_DESC) sample_desc;
++} mesh_stream;
++
+ static D3D12_SHADER_BYTECODE bytecode(D3D12DDI_HSHADER handle) {
+     const D3D12_UMD_Shader *shader = handle.pDrvPrivate;
+     return shader && shader->dxbc ? (D3D12_SHADER_BYTECODE) { shader->dxbc, shader->dxbc_size }
+@@ -704,6 +744,55 @@ static HRESULT create_graphics_pipeline(D3D12_UMD_Device *device, const D3D12DDI
+     return hr;
+ }
+ 
++HRESULT d3d12_umd_create_mesh_pipeline_state(D3D12_UMD_Device *device,
++                                             const D3D12DDIARG_CREATE_PIPELINE_STATE_0075 *args,
++                                             D3D12DDI_HPIPELINESTATE handle) {
++    D3D12_UMD_PipelineState *pso = handle.pDrvPrivate;
++    pso->pso = NULL;
++    mesh_stream s;
++    memset(&s, 0, sizeof(s));
++    s.root_signature.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE;
++    s.root_signature.data = umd_root_signature(args->hRootSignature);
++    s.as.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS;
++    s.as.data = bytecode(args->hAmplificationShader);
++    s.ms.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS;
++    s.ms.data = bytecode(args->hMeshShader);
++    s.ps.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS;
++    s.ps.data = bytecode(args->hPixelShader);
++    s.blend.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND;
++    s.blend.data = blend_desc(args->hBlendState);
++    s.sample_mask.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK;
++    s.sample_mask.data = args->SampleMask;
++    s.rasterizer.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER;
++    s.rasterizer.data = rasterizer_desc(args->hRasterizerState);
++    s.depth_stencil.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL2;
++    s.depth_stencil.data = depth_stencil_desc(args->hDepthStencilState);
++    s.topology.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY;
++    s.topology.data = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)args->PrimitiveTopologyType;
++    s.rtv_formats.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS;
++    s.rtv_formats.data.NumRenderTargets = args->NumRenderTargets;
++    memcpy(s.rtv_formats.data.RTFormats, args->RTVFormats, sizeof(s.rtv_formats.data.RTFormats));
++    s.dsv_format.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT;
++    s.dsv_format.data = args->DSVFormat;
++    s.sample_desc.type = D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC;
++    s.sample_desc.data = args->SampleDesc;
++
++    D3D12_PIPELINE_STATE_STREAM_DESC desc = { sizeof(s), &s };
++    pipeline_library *lib = args->LibraryReference.hLibrary.pDrvPrivate;
++    HRESULT hr;
++    if (lib) {
++        WCHAR name[9];
++        pipeline_name(args->LibraryReference.PipelineIndex, name);
++        hr = ID3D12PipelineLibrary1_LoadPipeline(lib->library, name, &desc, &IID_ID3D12PipelineState, (void **)&pso->pso);
++    } else {
++        hr = ID3D12Device2_CreatePipelineState(device->d3d12_2, &desc, &IID_ID3D12PipelineState, (void **)&pso->pso);
++    }
++    if (FAILED(hr) || d3d12_umd_log_enabled())
++        INFO("mesh pipeline state %p: %u render targets, dsv %u, samples %u: 0x%08lx", pso,
++             args->NumRenderTargets, args->DSVFormat, args->SampleDesc.Count, hr);
++    return hr;
++}
++
+ static SIZE_T APIENTRY calc_pipeline_state_size(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_PIPELINE_STATE_0033 *args) {
+     (void)hDevice;
+     (void)args;
+diff --git a/d3d12_umd.h b/d3d12_umd.h
+index d5673a3..529464d 100644
+--- a/d3d12_umd.h
++++ b/d3d12_umd.h
+@@ -188,6 +188,11 @@ typedef struct {
+     ID3D12PipelineState *pso;
+ } D3D12_UMD_PipelineState;
+ 
++typedef struct {
++    ID3D12StateObject *so;
++    ID3D12StateObjectProperties *props;
++} D3D12_UMD_StateObject;
++
+ typedef struct {
+     D3D12DDI_BLEND_DESC_0010 desc;
+ } D3D12_UMD_BlendState;
+@@ -272,6 +277,14 @@ void d3d12_umd_install_cmdlist(D3D12DDI_COMMAND_LIST_FUNCS_3D_0040 *t);
+ void d3d12_umd_install_resource_core(D3D12DDI_DEVICE_FUNCS_CORE_0040 *t);
+ void d3d12_umd_install_descriptor_core(D3D12DDI_DEVICE_FUNCS_CORE_0040 *t);
+ void d3d12_umd_install_pipeline_core(D3D12DDI_DEVICE_FUNCS_CORE_0040 *t);
++SIZE_T APIENTRY d3d12_umd_calc_mesh_shader_size(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args);
++void APIENTRY d3d12_umd_create_amplification_shader(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args,
++                                                    D3D12DDI_HSHADER handle);
++void APIENTRY d3d12_umd_create_mesh_shader(D3D12DDI_HDEVICE hDevice, const D3D12DDIARG_CREATE_SHADER_0026 *args,
++                                           D3D12DDI_HSHADER handle);
++HRESULT d3d12_umd_create_mesh_pipeline_state(D3D12_UMD_Device *device, const D3D12DDIARG_CREATE_PIPELINE_STATE_0075 *args,
++                                             D3D12DDI_HPIPELINESTATE handle);
++void *d3d12_umd_wrap_dxil_library(const UINT *code, SIZE_T *size_out);
+ 
+ /* d3d12_resource.c */
+ void d3d12_umd_resource_desc(const D3D12DDIARG_CREATERESOURCE_0003 *args, D3D12_RESOURCE_DESC *desc);
+@@ -292,6 +305,8 @@ void d3d12_umd_stub_fill_core(D3D12DDI_DEVICE_FUNCS_CORE_0040 *t);
+ void d3d12_umd_stub_fill_cl(D3D12DDI_COMMAND_LIST_FUNCS_3D_0040 *t);
+ void d3d12_umd_stub_fill_queue(D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001 *t);
+ void d3d12_umd_stub_fill_ext(D3D12DDI_EXTENDED_FEATURES_FUNCS_0021 *t);
++void d3d12_umd_stub_fill_core96(D3D12DDI_DEVICE_FUNCS_CORE_0096 *t);
++void d3d12_umd_stub_fill_cl95(D3D12DDI_COMMAND_LIST_FUNCS_3D_0095 *t);
+ 
+ void d3d12_umd_fill_modern_core(D3D12DDI_DEVICE_FUNCS_CORE_0096 *t);
+ void d3d12_umd_fill_modern_command_list(D3D12DDI_COMMAND_LIST_FUNCS_3D_0095 *t);
+diff --git a/gen_ddi_stubs.py b/gen_ddi_stubs.py
+index 03c5364..f134706 100644
+--- a/gen_ddi_stubs.py
++++ b/gen_ddi_stubs.py
+@@ -22,9 +22,11 @@ TABLES = [
+     ('D3D12DDI_COMMAND_LIST_FUNCS_3D_0040', 'cl'),
+     ('D3D12DDI_COMMAND_QUEUE_FUNCS_CORE_0001', 'queue'),
+     ('D3D12DDI_EXTENDED_FEATURES_FUNCS_0021', 'ext'),
++    ('D3D12DDI_DEVICE_FUNCS_CORE_0096', 'core96'),
++    ('D3D12DDI_COMMAND_LIST_FUNCS_3D_0095', 'cl95'),
+ ]
+ # Expected slot counts: a moved SDK pin must fail the build, not shift a table.
+-COUNTS = {'core': 96, 'cl': 58, 'queue': 7, 'ext': 4}
++COUNTS = {'core': 96, 'cl': 58, 'queue': 7, 'ext': 4, 'core96': 122, 'cl95': 71}
+ 
+ SOURCE = '''#define WIN32_LEAN_AND_MEAN
+ #include <windows.h>
+@@ -79,7 +81,12 @@ def signature(field):
+ 
+ 
+ def declare(ptype, name):
+-    # Pointer-to-array/function parameters would need the name spliced inside.
++    # Pointer-to-array/function parameters: splice name inside or decay T[N] -> T *.
++    m_arr = re.fullmatch(r'(.+?)\s*\[[^\]]*\]', ptype)
++    if m_arr:
++        return f'{m_arr.group(1).strip()} *{name}'
++    if '(*)' in ptype:
++        return ptype.replace('(*)', f'(*{name})', 1)
+     if '(*' in ptype or '[' in ptype:
+         raise SystemExit(f'unsupported parameter type {ptype!r}')
+     return f'{ptype} {name}'

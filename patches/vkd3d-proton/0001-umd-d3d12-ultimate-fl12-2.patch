@@ -1,0 +1,70 @@
+diff --git a/libs/vkd3d/device.c b/libs/vkd3d/device.c
+index c451892..feb0628 100644
+--- a/libs/vkd3d/device.c
++++ b/libs/vkd3d/device.c
+@@ -4297,7 +4297,11 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
+     {
+         data->Support1 = D3D12_FORMAT_SUPPORT1_BUFFER;
+ 
+-        if (device->device_info.features2.features.sparseResidencyBuffer)
++        if (device->device_info.features2.features.sparseResidencyBuffer
++#ifdef VKD3D_BUILD_UMD
++                || device->d3d12_caps.options.TiledResourcesTier
++#endif
++        )
+             data->Support2 = D3D12_FORMAT_SUPPORT2_TILED;
+         return S_OK;
+     }
+@@ -4449,6 +4453,17 @@ static HRESULT d3d12_device_get_format_support(struct d3d12_device *device, D3D1
+             if (vr == VK_SUCCESS)
+                 data->Support2 |= D3D12_FORMAT_SUPPORT2_TILED;
+         }
++#ifdef VKD3D_BUILD_UMD
++        else if ((image_features & VK_FORMAT_FEATURE_2_SAMPLED_IMAGE_BIT) &&
++                device->d3d12_caps.options.TiledResourcesTier &&
++                data->Format != DXGI_FORMAT_R9G9B9E5_SHAREDEXP &&
++                data->Format != DXGI_FORMAT_R8G8_B8G8_UNORM &&
++                data->Format != DXGI_FORMAT_G8R8_G8B8_UNORM &&
++                data->Format != DXGI_FORMAT_R1_UNORM)
++        {
++            data->Support2 |= D3D12_FORMAT_SUPPORT2_TILED;
++        }
++#endif
+ 
+         if (!image_features && format->vk_format_features_buffer &&
+                 device->device_info.features2.features.sparseResidencyBuffer)
+@@ -9933,7 +9948,13 @@ static void d3d12_device_caps_override(struct d3d12_device *device)
+     };
+ 
+     if (!vkd3d_get_env_var("VKD3D_FEATURE_LEVEL", fl_string, sizeof(fl_string)))
++    {
++#ifdef VKD3D_BUILD_UMD
++        strcpy(fl_string, "12_2");
++#else
+         return;
++#endif
++    }
+ 
+     for (i = 0; i < ARRAY_SIZE(feature_levels); i++)
+     {
+@@ -9970,11 +9991,11 @@ static void d3d12_device_caps_override(struct d3d12_device *device)
+     if (fl_override >= D3D_FEATURE_LEVEL_12_2)
+     {
+         caps->options5.RaytracingTier = max(caps->options5.RaytracingTier, D3D12_RAYTRACING_TIER_1_1);
+-        caps->options6.VariableShadingRateTier = max(caps->options6.VariableShadingRateTier, D3D12_VARIABLE_SHADING_RATE_TIER_1);
++        caps->options6.VariableShadingRateTier = max(caps->options6.VariableShadingRateTier, D3D12_VARIABLE_SHADING_RATE_TIER_2);
+         caps->options.ResourceBindingTier = max(caps->options.ResourceBindingTier, D3D12_RESOURCE_BINDING_TIER_3);
+         caps->options.TiledResourcesTier = max(caps->options.TiledResourcesTier, D3D12_TILED_RESOURCES_TIER_3);
+         caps->options.ConservativeRasterizationTier = max(caps->options.ConservativeRasterizationTier, D3D12_CONSERVATIVE_RASTERIZATION_TIER_3);
+-        caps->max_shader_model = max(caps->max_shader_model, D3D_SHADER_MODEL_6_5);
++        caps->max_shader_model = max(caps->max_shader_model, D3D_SHADER_MODEL_6_6);
+         caps->options7.MeshShaderTier = max(caps->options7.MeshShaderTier, D3D12_MESH_SHADER_TIER_1);
+         caps->options7.SamplerFeedbackTier = max(caps->options7.SamplerFeedbackTier, D3D12_SAMPLER_FEEDBACK_TIER_1_0);
+     }
+diff --git a/subprojects/dxil-spirv b/subprojects/dxil-spirv
+index bdbd41e..bb7e360 160000
+--- a/subprojects/dxil-spirv
++++ b/subprojects/dxil-spirv
+@@ -1 +1 @@
+-Subproject commit bdbd41e62eecdde4f1e91c161ac1cc8b93afe814
++Subproject commit bb7e3607b8689d49faef6ee00277bf6184ad001f-dirty

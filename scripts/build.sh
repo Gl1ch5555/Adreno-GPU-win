@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Build one architecture of the DroidVM GPU driver.
-#   ARCH=arm64   : kernel driver + native ARM64 user-mode drivers
+# Build one architecture of the DroidVM GPU driver:
+#   ARCH=arm64   : kernel driver + native ARM64 user-mode drivers (*_arm64.dll)
+#   ARCH=arm64ec : ARM64EC / x64 user-mode drivers (*_arm64ec.dll)
+#   ARCH=x86     : 32-bit WoW64 user-mode drivers (*_x86.dll)
 # Output goes to $OUT/$ARCH (default ./out/arm64).
-# Needs: llvm-mingw in PATH, $WINSDK prepared by setup-winsdk.sh,
-# rust nightly with rust-src, clang (as clang-cl), meson, ninja, cmake,
-# glslangValidator, cbindgen.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/versions.env"
@@ -39,7 +38,6 @@ if [ "$ARCH" = arm64 ]; then
   step "kernel driver (Rust)"
   K=$SRC/virtio-drivers-windows-rs
   cp "$WINSDK/ewdk.env" "$K/ewdk.env"
-  # Upstream config only has the x86_64 target: add the same for aarch64.
   if ! grep -q 'aarch64-pc-windows-msvc' "$K/.cargo/config.toml"; then
     python3 - "$K/.cargo/config.toml" <<'PY'
 import re, sys
@@ -55,28 +53,22 @@ PY
   (cd "$K" && cargo build --package virtio-gpu-wddm-rs --target aarch64-pc-windows-msvc)
   cp "$K/target/aarch64-pc-windows-msvc/debug/virtio_gpu_wddm_rs.dll" "$OUT/virtio_wddm_rs.sys"
   cp "$K/target/aarch64-pc-windows-msvc/debug/virtio_gpu_wddm_rs.pdb" "$OUT/" 2>/dev/null || true
-  # Diagnostic variant: records bring-up checkpoints under
-  # HKLM\SYSTEM\CurrentControlSet\Services\VirtioGpu\Parameters\Bringup
   (cd "$K" && cargo build --package virtio-gpu-wddm-rs --target aarch64-pc-windows-msvc \
      --features bringup-diagnostics --target-dir target-diag)
   cp "$K/target-diag/aarch64-pc-windows-msvc/debug/virtio_gpu_wddm_rs.dll" "$OUT/virtio_wddm_rs_diag.sys"
   endstep
 fi
-UAPI=$(dirname "$OUT")/arm64/include/virtio_wddm_uapi.h
 
-# ---------------------------------------------------------------- D3D11
-step "dx11um_virtio.dll (DXVK)"
+# ---------------------------------------------------------------- D3D10/11 (DXVK)
+step "dx11um_virtio.dll (D3D10/D3D11 DXVK)"
 D11=$SRC/virtio-d3d11
 ddk_headers "$D11/include/winddk" >/dev/null
-# UMDs use their own uapi header (include/virtio_wddm_uapi.h). The KMD parses
-# the newer ReuseBlob/Primary allocation extensions by private-data size
-# (+12/+32 bytes, adapter.rs), so the two headers are intentionally not synced.
 LTO=-flto; [ "$ARCH" = x86 ] && LTO=
 make -C "$D11" -j"$JOBS" PREFIX=$PREFIX BUILD_DIR=build-$TAG LTO=$LTO
 cp "$D11/build-$TAG/dist/dx11um_virtio.dll" "$OUT/"
 endstep
 
-# ---------------------------------------------------------------- D3D12
+# ---------------------------------------------------------------- D3D12 Ultimate + D3D9On12
 step "vkd3d-proton (UMD static libs)"
 VK=$SRC/vkd3d-proton; VKB=$VK/build.umd-$TAG
 [ -f "$VKB/build.ninja" ] || meson setup "$VKB" "$VK" --cross-file "$CROSSFILE" \
@@ -87,27 +79,31 @@ ninja -C "$VKB" -j "$JOBS" \
   subprojects/dxil-spirv/libdxbc_spv_module.a \
   subprojects/dxil-spirv/subprojects/dxbc-spirv/libdxbc_spv.a
 endstep
-step "dx12um_virtio.dll"
+step "dx12um_virtio.dll (D3D12 Ultimate FL 12_2)"
 D12=$SRC/virtio-d3d12
 ddk_headers "$D12/include/winddk" >/dev/null
+make -C "$D12" PREFIX=$PREFIX BUILD_DIR=build-$TAG VKD3D_SRC="$VK" VKD3D_BUILD="$VKB" D3D11_DIR="$D11" stubs
 make -C "$D12" -j"$JOBS" PREFIX=$PREFIX BUILD_DIR=build-$TAG VKD3D_SRC="$VK" VKD3D_BUILD="$VKB" D3D11_DIR="$D11"
 cp "$D12/build-$TAG/dist/dx12um_virtio.dll" "$OUT/"
 endstep
 
-# ---------------------------------------------------------------- Mesa (Turnip)
-step "vulkan_freedreno.dll (Turnip)"
+# ---------------------------------------------------------------- Mesa (Turnip Vulkan + Freedreno/Zink OpenGL)
+step "vulkan_freedreno.dll + droidvm_opengl.dll (Turnip + Gallium WGL)"
 M=$SRC/mesa; MB=$M/build-$TAG
 WDDM_INC=$OUT/wddm-inc; mkdir -p "$WDDM_INC"
 cp "$D11/include/virtio_wddm_uapi.h" "$D11"/include/winddk/*.h "$WDDM_INC/"
 [ -f "$MB/build.ninja" ] || meson setup "$MB" "$M" --cross-file "$CROSSFILE" --buildtype release \
-  -Dvulkan-drivers=freedreno -Dfreedreno-kmds=virtio -Dgallium-drivers= -Dplatforms=windows \
-  -Dllvm=disabled -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled \
+  -Dvulkan-drivers=freedreno -Dfreedreno-kmds=virtio -Dgallium-drivers=freedreno,zink -Dplatforms=windows \
+  -Dllvm=disabled -Dopengl=true -Dgallium-wgl-dll-name=droidvm_opengl -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dglx=disabled \
   -Dzstd=disabled -Dexpat=disabled -Dvalgrind=disabled -Dbuild-tests=false -Dmicrosoft-clc=disabled \
   -Dc_args="-I$WDDM_INC" -Dcpp_args="-I$WDDM_INC" \
   -Ddefault_library=static "-Dc_link_args=['-static','-lwinpthread']" "-Dcpp_link_args=['-static','-lwinpthread']"
-ninja -C "$MB" -j "$JOBS" src/freedreno/vulkan/libvulkan_freedreno.dll
+ninja -C "$MB" -j "$JOBS" \
+  src/freedreno/vulkan/libvulkan_freedreno.dll \
+  src/gallium/targets/wgl/droidvm_opengl.dll
 cp "$MB/src/freedreno/vulkan/libvulkan_freedreno.dll" "$OUT/vulkan_freedreno.dll"
-$PREFIX-strip --strip-debug --strip-unneeded "$OUT/vulkan_freedreno.dll"
+cp "$MB/src/gallium/targets/wgl/droidvm_opengl.dll" "$OUT/droidvm_opengl.dll"
+$PREFIX-strip --strip-debug --strip-unneeded "$OUT/vulkan_freedreno.dll" "$OUT/droidvm_opengl.dll"
 endstep
 
 # ---------------------------------------------------------------- Vulkan loader
@@ -124,20 +120,22 @@ cmake -S "$SRC/Vulkan-Loader" -B "$LB" -G Ninja \
   -DVULKAN_HEADERS_INSTALL_DIR="$VH"
 cmake --build "$LB" -j "$JOBS"
 cp "$LB/loader/vulkan-1.dll" "$OUT/droidvm_vulkan.dll"
+$PREFIX-strip --strip-debug --strip-unneeded "$OUT/droidvm_vulkan.dll"
 endstep
 
 # ---------------------------------------------------------------- naming
-if [ "$ARCH" != arm64 ]; then
-  # The UMD looks for <name>_x86.dll / <name>_arm64ec.dll next to the native ones.
-  for f in dx11um_virtio dx12um_virtio vulkan_freedreno droidvm_vulkan; do
-    mv "$OUT/$f.dll" "$OUT/${f}_$TAG.dll"
-  done
-fi
+# All implementation DLLs carry explicit _arm64 / _arm64ec / _x86 suffixes;
+# unsuffixed dx11um_virtio.dll, dx12um_virtio.dll, vulkan_freedreno.dll,
+# droidvm_opengl.dll, and droidvm_vulkan.dll are ARM64X pure forwarders.
+for f in dx11um_virtio dx12um_virtio vulkan_freedreno droidvm_vulkan droidvm_opengl; do
+  mv "$OUT/$f.dll" "$OUT/${f}_$TAG.dll"
+done
 rm -rf "$OUT/wddm-inc"
+
 # Every shipped DLL may only import Windows system DLLs: the driver store has no
-# room for mingw runtimes (a missing libz-1.dll silently broke Turnip in build-5).
+# room for mingw runtimes.
 for f in "$OUT"/*.dll; do
-  bad=$(llvm-objdump -p "$f" | sed -n 's/^ *DLL Name: //p' | grep -viE '^(api-ms-win-.*|ext-ms-win-.*|kernel32|kernelbase|user32|gdi32|advapi32|version|cfgmgr32|ole32|oleaut32|shell32|shlwapi|ws2_32|dxgi|d3d11|d3d12|dxcore|gdi32full|ntdll|bcrypt|setupapi|winmm|dbghelp|msvcrt|ucrtbase)\.dll$' || true)
+  bad=$(llvm-objdump -p "$f" | sed -n 's/^ *DLL Name: //p' | grep -viE '^(api-ms-win-.*|ext-ms-win-.*|kernel32|kernelbase|user32|gdi32|advapi32|version|cfgmgr32|ole32|oleaut32|shell32|shlwapi|ws2_32|dxgi|d3d11|d3d12|dxcore|gdi32full|ntdll|bcrypt|setupapi|winmm|dbghelp|msvcrt|ucrtbase|opengl32|dwmapi)\.dll$' || true)
   [ -z "$bad" ] || { echo "ERROR: $f imports non-system DLLs: $bad"; exit 1; }
 done
 ls -la "$OUT"

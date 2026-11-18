@@ -1,0 +1,61 @@
+diff --git a/src/drm/drm2kgsl/drm2kgsl_renderer.c b/src/drm/drm2kgsl/drm2kgsl_renderer.c
+index 7ad7b7f..c24672e 100644
+--- a/src/drm/drm2kgsl/drm2kgsl_renderer.c
++++ b/src/drm/drm2kgsl/drm2kgsl_renderer.c
+@@ -172,6 +172,12 @@ static unsigned g_nr_timelines;
+  */
+ #define KGSL_A830_CHIP_ID UINT64_C(0x44050000)
+ 
++static inline bool
++kgsl_is_a8xx(void)
++{
++   return (g_chip_id >> 24) == 0x44;
++}
++
+ /* Aggregate tracing for the host-side arena and fence paths.  Set
+  * CROSVM_DRM2KGSL_DIAG=1 to enable it.  Counters are process-wide
+  * because the arena is shared by all KGSL contexts in the renderer process. */
+@@ -243,7 +249,7 @@ kgsl_use_wait_timestamp(void)
+       return false;
+    if (getenv("NCTX_WAITTS"))
+       return true;
+-   return g_chip_id != KGSL_A830_CHIP_ID;
++   return !kgsl_is_a8xx();
+ }
+ 
+ static void
+@@ -2313,7 +2319,7 @@ kgsl_ccmd_gem_submit(struct drm_context *dctx, struct vdrm_ccmd_req *hdr)
+       first_timestamp = timestamps->last_host_timestamp + 1;
+    }
+ 
+-   const unsigned max_ibs = g_chip_id == KGSL_A830_CHIP_ID
++   const unsigned max_ibs = kgsl_is_a8xx()
+                                ? KGSL_A830_GPU_COMMAND_MAX_IBS
+                                : KGSL_GPU_COMMAND_MAX_IBS;
+ 
+@@ -3238,6 +3244,14 @@ drm2kgsl_renderer_probe(int fd, struct virgl_renderer_capset_drm *capset)
+    capset->version_minor = 12;
+    capset->version_patchlevel = 0;
+ 
++#ifndef KGSL_PROP_IS_RAYTRACING_ENABLED
++#define KGSL_PROP_IS_RAYTRACING_ENABLED 0x34
++#endif
++   uint32_t rt_enabled = 0;
++   if (kgsl_getprop(fd, KGSL_PROP_IS_RAYTRACING_ENABLED, &rt_enabled,
++                    sizeof(rt_enabled)))
++      rt_enabled = kgsl_is_a8xx() ? 1u : 0u;
++
+    capset->wire_format_version = 2;
+    capset->u.msm.has_cached_coherent = 1;
+    capset->u.msm.priorities = g_nr_timelines;
+@@ -3250,7 +3264,9 @@ drm2kgsl_renderer_probe(int fd, struct virgl_renderer_capset_drm *capset)
+    capset->u.msm.highest_bank_bit = g_highest_bank_bit;
+    capset->u.msm.uche_trap_base = g_uche_trap_base;
+    capset->u.msm.has_preemption = VIRTGPU_CAP_BOOL_FALSE;
+-   capset->u.msm.has_raytracing = VIRTGPU_CAP_BOOL_FALSE;
++   capset->u.msm.has_raytracing = rt_enabled
++                                     ? VIRTGPU_CAP_BOOL_TRUE
++                                     : VIRTGPU_CAP_BOOL_FALSE;
+ 
+    drm_log("gpu_id=%u chip_id=0x%" PRIx64 " va_start=0x%" PRIx64
+            " va_size=0x%" PRIx64 " gmem_size=%u hbb=%u",

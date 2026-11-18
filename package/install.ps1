@@ -21,7 +21,22 @@ try {
         Set-Content (Join-Path (Split-Path $log) 'testsigning-enabled-by-us') '1'
     }
 
-    $inf = Join-Path $Dir 'driver\virtio_wddm_rs.inf'
+    # Ensure Vulkan runtime loader exists in System32 (ARM64X) and SysWOW64 (x86) on clean Windows 11.
+    $drvDir = Join-Path $Dir 'driver'
+    $sys32 = Join-Path $env:SystemRoot 'System32'
+    $syswow = Join-Path $env:SystemRoot 'SysWOW64'
+    if (-not (Test-Path (Join-Path $sys32 'vulkan-1.dll'))) {
+        Copy-Item (Join-Path $drvDir 'droidvm_vulkan.dll') (Join-Path $sys32 'vulkan-1.dll') -Force
+        Copy-Item (Join-Path $drvDir 'droidvm_vulkan_arm64.dll') $sys32 -Force
+        Copy-Item (Join-Path $drvDir 'droidvm_vulkan_arm64ec.dll') $sys32 -Force
+        Write-Host "Installed ARM64X vulkan-1.dll into $sys32"
+    }
+    if ((Test-Path $syswow) -and -not (Test-Path (Join-Path $syswow 'vulkan-1.dll'))) {
+        Copy-Item (Join-Path $drvDir 'droidvm_vulkan_x86.dll') (Join-Path $syswow 'vulkan-1.dll') -Force
+        Write-Host "Installed x86 vulkan-1.dll into $syswow"
+    }
+
+    $inf = Join-Path $drvDir 'virtio_wddm_rs.inf'
     pnputil /add-driver "$inf" /install | Write-Host
     # 0 = ok, 3010 = ok, reboot required; 259 = no matching device (still staged)
     if ($LASTEXITCODE -notin 0, 3010, 259) { throw "pnputil failed with code $LASTEXITCODE" }

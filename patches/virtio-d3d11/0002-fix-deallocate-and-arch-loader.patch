@@ -1,0 +1,121 @@
+diff --git a/device.c b/device.c
+index 25c3e5d..1d053fc 100644
+--- a/device.c
++++ b/device.c
+@@ -17,6 +17,8 @@
+ 
+ __thread VIRTIO_WDDM_RuntimeAllocRecord virtio_wddm_last_runtime_alloc;
+ __thread VIRTIO_WDDM_RuntimeAllocScope virtio_wddm_runtime_alloc_scope;
++__thread HANDLE virtio_wddm_destroying_rt_resource;
++__thread bool virtio_wddm_destroying_freed_km_alloc;
+ 
+ /* Perform an allocation the ICD asked for, on the runtime's device.
+  *
+@@ -136,10 +138,11 @@ int virtio_wddm_runtime_free(void *ctx, const VIRTIO_WDDM_RuntimeAllocResult *al
+     }
+ 
+     D3DKMT_HANDLE handles[1] = { alloc->hAllocation };
++    HANDLE hRes = virtio_wddm_destroying_rt_resource;
+     D3DDDICB_DEALLOCATE deallocate = {
+-        .hResource      = NULL,
+-        .NumAllocations = 1,
+-        .HandleList     = handles,
++        .hResource      = hRes,
++        .NumAllocations = hRes ? 0 : 1,
++        .HandleList     = hRes ? NULL : handles,
+     };
+ 
+     HRESULT hr = device->base.KTCallbacks.pfnDeallocateCb(device->base.hRTDevice.handle, &deallocate);
+@@ -155,6 +158,9 @@ int virtio_wddm_runtime_free(void *ctx, const VIRTIO_WDDM_RuntimeAllocResult *al
+         return -EIO;
+     }
+ 
++    if (hRes) {
++        virtio_wddm_destroying_freed_km_alloc = true;
++    }
+     return 0;
+ }
+ 
+diff --git a/device.h b/device.h
+index 6409c6f..23a2226 100644
+--- a/device.h
++++ b/device.h
+@@ -86,6 +86,8 @@ typedef struct {
+ } VIRTIO_WDDM_RuntimeAllocScope;
+ 
+ extern __thread VIRTIO_WDDM_RuntimeAllocScope virtio_wddm_runtime_alloc_scope;
++extern __thread HANDLE virtio_wddm_destroying_rt_resource;
++extern __thread bool virtio_wddm_destroying_freed_km_alloc;
+ 
+ /* VIRTIO_WDDM_RuntimeAllocator hooks; ctx is the VIRTIO_WDDM_Device. */
+ int virtio_wddm_runtime_alloc(void *ctx, const VIRTIO_WDDM_RuntimeAllocRequest *req,
+diff --git a/resource.c b/resource.c
+index 5096363..ad6ecc4 100644
+--- a/resource.c
++++ b/resource.c
+@@ -1192,11 +1192,14 @@ void APIENTRY virtio_wddm_open_resource(D3D10DDI_HDEVICE hDevice, const D3D10DDI
+     resource->base.MiscFlags   = D3D10_DDI_RESOURCE_MISC_SHARED;
+ 
+     resource->base.hKMResource = pArgs->hKMResource.handle;
+-    resource->base.hKMAllocation = pArgs->pOpenAllocationInfo2->hAllocation;
++    /* Consumer: the D3D11 runtime owns the opened KM allocation; leave
++     * base.hKMAllocation = 0 so DestroyResource does not free it. */
++    resource->base.hKMAllocation = 0;
++    D3DKMT_HANDLE opened_alloc = pArgs->pOpenAllocationInfo2->hAllocation;
+ 
+     VIRTIO_WDDM_ResourceInfo res_info = {
+         .tag = VIRTIO_WDDM_ESCAPE_RESOURCE_INFO_TAG,
+-        .handle = resource->base.hKMAllocation,
++        .handle = opened_alloc,
+         .id = id,
+         .info = alloc_info,
+     };
+@@ -1386,7 +1389,14 @@ void APIENTRY virtio_wddm_destroy_resource(D3D10DDI_HDEVICE hDevice, D3D10DDI_HR
+     }
+ 
+     if (resource->memory != VK_NULL_HANDLE) {
++        virtio_wddm_destroying_rt_resource = resource->base.hKMAllocation ? resource->base.hRTResource.handle : NULL;
++        virtio_wddm_destroying_freed_km_alloc = false;
+         device->vk_FreeMemory(device->vk, resource->memory, NULL);
++        if (virtio_wddm_destroying_freed_km_alloc) {
++            resource->base.hKMAllocation = 0;
++        }
++        virtio_wddm_destroying_rt_resource = NULL;
++        virtio_wddm_destroying_freed_km_alloc = false;
+     }
+ 
+     if (resource->base.hKMAllocation != 0) {
+diff --git a/vk_bootstrap.c b/vk_bootstrap.c
+index 3daf36a..b8dbf33 100644
+--- a/vk_bootstrap.c
++++ b/vk_bootstrap.c
+@@ -175,17 +175,22 @@ static HRESULT get_drm_context_type(HANDLE hRTAdapter, HANDLE hRTDevice, const D
+ static HMODULE load_icd(const wchar_t *icd_name) {
+     wchar_t umd_path[MAX_PATH];
+     HMODULE umd_module = NULL;
+-#if defined(__i386__)
+-    /* The signed package contains both 64-bit and WoW dependencies. */
+-    wchar_t wow_name[MAX_PATH];
++    /* Each ABI loads its matching DriverStore DLL (_x86, _arm64ec, _arm64). */
++    wchar_t arch_name[MAX_PATH];
+     const wchar_t *suffix = wcsrchr(icd_name, L'.');
+     if (!suffix || wcscmp(suffix, L".dll") != 0) return NULL;
+     size_t stem = suffix - icd_name;
+-    if (stem + ARRAYSIZE(L"_x86.dll") > ARRAYSIZE(wow_name)) return NULL;
+-    wmemcpy(wow_name, icd_name, stem);
+-    wcscpy(wow_name + stem, L"_x86.dll");
+-    icd_name = wow_name;
++#if defined(__i386__)
++    const wchar_t *arch_ext = L"_x86.dll";
++#elif defined(__arm64ec__)
++    const wchar_t *arch_ext = L"_arm64ec.dll";
++#else
++    const wchar_t *arch_ext = L"_arm64.dll";
+ #endif
++    if (stem + wcslen(arch_ext) + 1 > ARRAYSIZE(arch_name)) return NULL;
++    wmemcpy(arch_name, icd_name, stem);
++    wcscpy(arch_name + stem, arch_ext);
++    icd_name = arch_name;
+ 
+     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                        (LPCWSTR)&load_icd, &umd_module);

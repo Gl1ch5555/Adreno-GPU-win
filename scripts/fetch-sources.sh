@@ -20,8 +20,8 @@ for r in virtio-drivers-windows-rs virtio-d3d11 virtio-d3d12 vkd3d-proton mesa; 
   clone "https://github.com/Droid-VM/$r" "$r" "$DROIDVM_BRANCH"
 done
 
-# mesa: local patches (idempotent: skip if already applied)
-for r in mesa virtio-drivers-windows-rs virtio-d3d11; do
+# local patches (idempotent: skip if already applied)
+for r in mesa virtio-drivers-windows-rs virtio-d3d11 virtio-d3d12 vkd3d-proton; do
   for p in "$ROOT"/patches/$r/*.patch; do
     [ -f "$p" ] || continue
     if git -C $r apply --check "$p" 2>/dev/null; then git -C $r apply "$p"

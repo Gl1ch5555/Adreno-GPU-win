@@ -1,0 +1,101 @@
+diff --git a/src/freedreno/drm/virtio/virtio_bo.c b/src/freedreno/drm/virtio/virtio_bo.c
+index a0bb6fd..44a12df 100644
+--- a/src/freedreno/drm/virtio/virtio_bo.c
++++ b/src/freedreno/drm/virtio/virtio_bo.c
+@@ -327,8 +327,11 @@ virtio_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
+    }
+ #ifdef _WIN32
+    if (virtio_dev->vdrm->supports_guest_alloc) {
+-      req.flags &= ~MSM_BO_WC;
+-      req.flags |= MSM_BO_CACHED_COHERENT;
++      req.flags &= ~(MSM_BO_CACHED | MSM_BO_CACHED_COHERENT | MSM_BO_UNCACHED | MSM_BO_WC);
++      if (dev->has_cached_coherent)
++         req.flags |= MSM_BO_CACHED_COHERENT;
++      else
++         req.flags |= MSM_BO_WC;
+    }
+ #endif
+ 
+diff --git a/src/freedreno/drm/virtio/virtio_device.c b/src/freedreno/drm/virtio/virtio_device.c
+index 7592654..6173f6a 100644
+--- a/src/freedreno/drm/virtio/virtio_device.c
++++ b/src/freedreno/drm/virtio/virtio_device.c
+@@ -172,7 +172,14 @@ virtio_device_new(int fd)
+    dev->funcs = &funcs;
+    dev->fd = fd;
+    dev->version = caps.version_minor;
++#ifdef _WIN32
++   dev->has_cached_coherent =
++      debug_get_bool_option("TU_WIN_CACHED_COHERENT", false)
++         ? caps.u.msm.has_cached_coherent
++         : false;
++#else
+    dev->has_cached_coherent = caps.u.msm.has_cached_coherent;
++#endif
+ 
+    /* Blob IDs are matched across asynchronously processed WDDM contexts. Use
+     * a process-unique high range so independent device instances cannot reuse
+diff --git a/src/freedreno/vulkan/tu_knl_drm_virtio.cc b/src/freedreno/vulkan/tu_knl_drm_virtio.cc
+index 2f98c89..a47a3a4 100644
+--- a/src/freedreno/vulkan/tu_knl_drm_virtio.cc
++++ b/src/freedreno/vulkan/tu_knl_drm_virtio.cc
+@@ -1859,10 +1859,14 @@ virtio_bo_init_common(struct tu_device *dev,
+    if (vdev->vdrm->supports_guest_alloc) {
+       req.flags |= MSM_BO_GUEST_ALLOC;
+ #ifdef _WIN32
+-      /* KMD's contiguous allocation and its userspace alias are cacheable.
+-       * Import it IO-coherently; do not claim a WC CPU mapping to KGSL. */
+-      req.flags &= ~(MSM_BO_CACHED | MSM_BO_WC | MSM_BO_UNCACHED);
+-      req.flags |= MSM_BO_CACHED_COHERENT;
++      /* GuestBacking maps pages with MmWriteCombined so CPU writes bypass
++       * non-snooped guest L1/L2 caches on Adreno 829 / Gunyah; import as WC
++       * unless TU_WIN_CACHED_COHERENT=1 explicitly opts into cached-coherent. */
++      req.flags &= ~(MSM_BO_CACHED | MSM_BO_WC | MSM_BO_UNCACHED | MSM_BO_CACHED_COHERENT);
++      if (dev->physical_device->has_cached_coherent_memory)
++         req.flags |= MSM_BO_CACHED_COHERENT;
++      else
++         req.flags |= MSM_BO_WC;
+ #endif
+    }
+ 
+@@ -2921,7 +2925,16 @@ tu_knl_drm_virtio_load(struct tu_instance *instance,
+ 
+    device->gmem_size = debug_get_num_option("TU_GMEM", device->gmem_size);
+ 
++#ifdef _WIN32
++   device->has_cached_coherent_memory =
++      debug_get_bool_option("TU_WIN_CACHED_COHERENT", false)
++         ? caps.u.msm.has_cached_coherent
++         : false;
++   if (!has_raytracing && (caps.u.msm.chip_id >> 24) >= 0x43)
++      has_raytracing = debug_get_bool_option("TU_WIN_RAYTRACING", true);
++#else
+    device->has_cached_coherent_memory = caps.u.msm.has_cached_coherent;
++#endif
+ 
+    device->submitqueue_priority_count = caps.u.msm.priorities;
+ 
+diff --git a/src/virtio/vdrm/vdrm_wddm.c b/src/virtio/vdrm/vdrm_wddm.c
+index c78bb0e..35aa3ee 100644
+--- a/src/virtio/vdrm/vdrm_wddm.c
++++ b/src/virtio/vdrm/vdrm_wddm.c
+@@ -905,6 +905,10 @@ prender_submit_one(struct vdrm_wddm *w, const void *body, uint32_t body_len, uin
+    if (!w->prender_cmd || needed > w->prender_cmd_size)
+       return -EAGAIN;
+ 
++   /* Drain write-combined guest BO stores (staging pixels, IBs, descriptors)
++    * to system memory before handing the command buffer to KMD/KGSL. */
++   MemoryBarrier();
++
+    hdr.id = VIRTIO_WDDM_COMMAND_ID_SUBMIT;
+    hdr.flags = VIRTIO_WDDM_COMMAND_FLAG_RING_IDX;
+    hdr.ring = ring;
+@@ -972,6 +976,8 @@ submit_one(struct vdrm_wddm *w, const void *body, uint32_t body_len, uint8_t rin
+    if (body_len == 0 || body_len > UINT32_MAX - body_off)
+       return -EINVAL;
+ 
++   MemoryBarrier();
++
+    /* GEM_SUBMIT contains the device's live BO list and regularly exceeds a
+     * page in DWM. The KMD copies it into queue-owned DMA storage, so keep the
+     * complete request together and only retain this buffer for the escape.

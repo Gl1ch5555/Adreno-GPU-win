@@ -1,9 +1,8 @@
 ;
 ; Copyright (C) 2026 anonymix007, DroidVM team
-; ARM64 package for the unofficial droidvm-gpu-build (based on the x64 INF
-; from Droid-VM/virtio-drivers-windows-rs, branch wingpu).
-;
-; virtio_wddm_rs.inf
+; Multi-arch (ARM64 + ARM64X/ARM64EC/x64 + x86 WoW64) package for droidvm-gpu-build:
+; Vulkan 1.4, OpenGL 4.6 (Freedreno + Zink), Direct3D 9 (D3D9On12), Direct3D 10/11 (DXVK),
+; and Direct3D 12 Ultimate FL 12_2 (vkd3d-proton).
 ;
 
 [Version]
@@ -16,7 +15,7 @@ CatalogFile=virtio_wddm_rs.cat
 PnpLockdown=1
 
 [DestinationDirs]
-VirtioGpu_Files.Driver = 13   ; drivers
+VirtioGpu_Files.Driver = 13   ; DriverStore
 VirtioGpu_Files.Usermode = 13 ; DriverStore
 
 [SourceDisksNames]
@@ -25,11 +24,27 @@ VirtioGpu_Files.Usermode = 13 ; DriverStore
 [SourceDisksFiles]
 virtio_wddm_rs.sys = 1,,
 dx11um_virtio.dll = 1,,
+dx11um_virtio_arm64.dll = 1,,
+dx11um_virtio_arm64ec.dll = 1,,
+dx11um_virtio_x86.dll = 1,,
 dx12um_virtio.dll = 1,,
+dx12um_virtio_arm64.dll = 1,,
+dx12um_virtio_arm64ec.dll = 1,,
+dx12um_virtio_x86.dll = 1,,
 vulkan_freedreno.dll = 1,,
+vulkan_freedreno_arm64.dll = 1,,
+vulkan_freedreno_arm64ec.dll = 1,,
+vulkan_freedreno_x86.dll = 1,,
 droidvm_vulkan.dll = 1,,
+droidvm_vulkan_arm64.dll = 1,,
+droidvm_vulkan_arm64ec.dll = 1,,
+droidvm_vulkan_x86.dll = 1,,
+droidvm_opengl.dll = 1,,
+droidvm_opengl_arm64.dll = 1,,
+droidvm_opengl_arm64ec.dll = 1,,
+droidvm_opengl_x86.dll = 1,,
 freedreno_icd.aarch64.json = 1,,
-;@EXTRA_SOURCEDISKSFILES@
+freedreno_icd.x86.json = 1,,
 
 [Manufacturer]
 %ManufacturerName%=Standard,NTarm64.10.0...16299
@@ -43,11 +58,27 @@ virtio_wddm_rs.sys,,,2
 
 [VirtioGpu_Files.Usermode]
 dx11um_virtio.dll,,,0
+dx11um_virtio_arm64.dll,,,0
+dx11um_virtio_arm64ec.dll,,,0
+dx11um_virtio_x86.dll,,,0
 dx12um_virtio.dll,,,0
+dx12um_virtio_arm64.dll,,,0
+dx12um_virtio_arm64ec.dll,,,0
+dx12um_virtio_x86.dll,,,0
 vulkan_freedreno.dll,,,0
+vulkan_freedreno_arm64.dll,,,0
+vulkan_freedreno_arm64ec.dll,,,0
+vulkan_freedreno_x86.dll,,,0
 droidvm_vulkan.dll,,,0
+droidvm_vulkan_arm64.dll,,,0
+droidvm_vulkan_arm64ec.dll,,,0
+droidvm_vulkan_x86.dll,,,0
+droidvm_opengl.dll,,,0
+droidvm_opengl_arm64.dll,,,0
+droidvm_opengl_arm64ec.dll,,,0
+droidvm_opengl_x86.dll,,,0
 freedreno_icd.aarch64.json,,,0
-;@EXTRA_USERMODE_FILES@
+freedreno_icd.x86.json,,,0
 
 [VirtioGpu_Inst]
 Include=msdv.inf
@@ -85,12 +116,20 @@ HKR,,EventMessageFile,%REG_EXPAND_SZ%,"%%SystemRoot%%\System32\IoLogMsg.dll"
 HKR,,TypesSupported,%REG_DWORD%,7
 
 [VirtioGpu_DeviceSettings]
-; Slots: D3D9 (empty -> Windows uses D3D9On12), D3D10, D3D11, D3D12
+; Slots: D3D9 ('<>' activates Windows system D3D9On12), D3D10, D3D10.1/11, D3D12 Ultimate (FL 12_2)
+HKR,, InstalledDisplayDrivers,     %REG_MULTI_SZ%, dx11um_virtio,dx12um_virtio
 HKR,, UserModeDriverName,          %REG_MULTI_SZ%, <>,%13%\dx11um_virtio.dll,%13%\dx11um_virtio.dll,%13%\dx12um_virtio.dll
-HKR,, VulkanDriverName,            %REG_SZ%,       %13%\freedreno_icd.aarch64.json
+HKR,, UserModeDriverNameWow,       %REG_MULTI_SZ%, <>,%13%\dx11um_virtio_x86.dll,%13%\dx11um_virtio_x86.dll,%13%\dx12um_virtio_x86.dll
+HKR,, VulkanDriverName,            %REG_MULTI_SZ%, %13%\freedreno_icd.aarch64.json
+HKR,, VulkanDriverNameWow,         %REG_MULTI_SZ%, %13%\freedreno_icd.x86.json
+HKR,, OpenGLDriverName,            %REG_SZ%,       "%13%\droidvm_opengl.dll"
+HKR,, OpenGLVersion,               %REG_DWORD%,    2
+HKR,, OpenGLFlags,                 %REG_DWORD%,    1
+HKR,, OpenGLDriverNameWow,         %REG_SZ%,       "%13%\droidvm_opengl_x86.dll"
+HKR,, OpenGLVersionWow,            %REG_DWORD%,    2
+HKR,, OpenGLFlagsWow,              %REG_DWORD%,    1
 HKR,, D3D12Enable,                 %REG_DWORD%,    1
 HKR,, D3D12FeatureLevelOverride,   %REG_DWORD%,    0
-;@EXTRA_REG@
 
 [VirtioGpu_PCI_MSIX]
 HKR, "Interrupt Management",, 0x00000010
@@ -99,7 +138,7 @@ HKR, "Interrupt Management\MessageSignaledInterruptProperties", MSISupported, 0x
 HKR, "Interrupt Management\MessageSignaledInterruptProperties", MessageNumberLimit, 0x00010001, 4
 
 [Strings]
-diskId1 = "VirtIO GPU controller Installation Disk"
+DiskId1 = "VirtIO GPU controller Installation Disk"
 VirtioGpu.DeviceDesc = "Qualcomm Adreno 829 (DroidVM, unofficial build)"
 ManufacturerName = "anonymix007 / DroidVM (unofficial build)"
 

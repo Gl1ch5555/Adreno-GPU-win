@@ -1,7 +1,9 @@
 {
     "file_format_version": "1.0.1",
     "ICD": {
-        "library_path": "vulkan_freedreno.dll",
-        "api_version": "1.4.0"
+        "library_path": ".\\vulkan_freedreno.dll",
+        "api_version": "1.4.335",
+        "library_arch": "64",
+        "is_portability_driver": false
     }
 }
