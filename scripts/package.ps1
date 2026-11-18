@@ -12,15 +12,13 @@ Remove-Item -Recurse -Force $stage, $dist -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $drv, $dist | Out-Null
 
 # ---- collect binaries (ARM64 + ARM64EC + x86 + ARM64X forwarders)
-$a64 = Join-Path $root 'bin\bin-arm64\out\arm64'
-$aec = Join-Path $root 'bin\bin-arm64ec\out\arm64ec'
-$x86 = Join-Path $root 'bin\bin-x86\out\x86'
-$a64x = Join-Path $root 'bin\bin-arm64x\out\arm64x'
-
-Copy-Item "$a64\virtio_wddm_rs.sys" $drv
-foreach ($dir in @($a64, $aec, $x86, $a64x)) {
+$sysFile = Get-ChildItem (Join-Path $root 'bin\bin-arm64') -Recurse -Filter 'virtio_wddm_rs.sys' | Select-Object -First 1
+if (-not $sysFile) { throw 'Missing virtio_wddm_rs.sys in bin-arm64' }
+Copy-Item $sysFile.FullName $drv
+foreach ($name in @('bin-arm64', 'bin-arm64ec', 'bin-x86', 'bin-arm64x')) {
+    $dir = Join-Path $root "bin\$name"
     if (-not (Test-Path $dir)) { throw "Missing artifact directory: $dir" }
-    Get-ChildItem $dir -Filter '*.dll' | Copy-Item -Destination $drv
+    Get-ChildItem $dir -Recurse -Filter '*.dll' | Copy-Item -Destination $drv -Force
 }
 Copy-Item package\freedreno_icd.aarch64.json, package\freedreno_icd.x86.json $drv
 
@@ -89,8 +87,9 @@ Push-Location $stage
 foreach ($iss in 'setup.iss', 'uninstall.iss') { & $iscc /Q "/DAppVersion=$version" $iss; if ($LASTEXITCODE) { throw "ISCC $iss failed" } }
 Pop-Location
 # ---- diagnostic variant: same package, KMD built with bringup-diagnostics
-$diagSys = Join-Path $a64 'virtio_wddm_rs_diag.sys'
-if (Test-Path $diagSys) {
+$diagSysObj = Get-ChildItem (Join-Path $root 'bin\bin-arm64') -Recurse -Filter 'virtio_wddm_rs_diag.sys' | Select-Object -First 1
+$diagSys = if ($diagSysObj) { $diagSysObj.FullName } else { $null }
+if ($diagSys -and (Test-Path $diagSys)) {
     $drvDiag = Join-Path $stage 'driver-diag'
     Copy-Item $drv $drvDiag -Recurse
     Remove-Item (Join-Path $drvDiag 'virtio_wddm_rs.cat')
